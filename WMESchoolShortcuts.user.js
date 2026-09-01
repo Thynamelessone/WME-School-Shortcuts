@@ -1,24 +1,24 @@
 // ==UserScript==
-// @name         WME School Shortcuts
-// @namespace    https://github.com/
-// @version      1.0.1
-// @description  Keyboard shortcuts for creating School Zones and School Area Places in WME.
-// @author       Thynamelessone
-// @match        https://www.waze.com/*editor*
-// @match        https://beta.waze.com/*editor*
-// @exclude      https://www.waze.com/*user/*editor/*
-// @grant        none
-// @require https://cdn.jsdelivr.net/gh/TheEditorX/wme-sdk-plus@1234567890abcdef1234567890abcdef12345678/wme-sdk-plus.js
+// @name        WME School Shortcuts
+// @namespace   https://github.com/
+// @version     1.0.2
+// @description Keyboard shortcuts for creating School Zones and School Area Places in WME.
+// @author      Thynamelessone
+// @match       https://www.waze.com/*editor*
+// @match       https://beta.waze.com/*editor*
+// @exclude     https://www.waze.com/*user/*editor/*
+// @grant       none
+// @require     https://cdn.jsdelivr.net/gh/TheEditorX/wme-sdk-plus@1234567890abcdef1234567890abcdef12345678/wme-sdk-plus.js
 // @require     https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
-// @downloadURL  https://github.com/Thynamelessone/WME-School-Shortcuts/raw/refs/heads/main/WMESchoolShortcuts.user.js
-// @updateURL    https://github.com/Thynamelessone/WME-School-Shortcuts/raw/refs/heads/main/WMESchoolShortcuts.user.js
+// @downloadURL https://github.com/Thynamelessone/WME-School-Shortcuts/raw/refs/heads/main/WMESchoolShortcuts.user.js
+// @updateURL   https://github.com/Thynamelessone/WME-School-Shortcuts/raw/refs/heads/main/WMESchoolShortcuts.user.js
 // ==/UserScript==
 
 (function () {
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "";
+    const updateMessage = "Keyboard Shortcuts Updated to avoid clashes with existing shortcuts"
     WazeWrap.Interface.ShowScriptUpdate('WME School Shortcuts', GM_info.script.version, updateMessage);
     const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
 
