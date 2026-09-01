@@ -8,7 +8,7 @@
 // @match       https://beta.waze.com/*editor*
 // @exclude     https://www.waze.com/*user/*editor/*
 // @grant       none
-// @require     https://cdn.jsdelivr.net/gh/TheEditorX/wme-sdk-plus/wme-sdk-plus.js
+// @require     https://cdn.jsdelivr.net/gh/TheEditorX/wme-sdk-plus@72968ef0792a3bd673f768f8ee2a10d67653d1ea/wme-sdk-plus.js
 // @require     https://greasyfork.org/scripts/24851-wazewrap/code/WazeWrap.js
 // @downloadURL https://github.com/Thynamelessone/WME-School-Shortcuts/raw/refs/heads/main/WMESchoolShortcuts.user.js
 // @updateURL   https://github.com/Thynamelessone/WME-School-Shortcuts/raw/refs/heads/main/WMESchoolShortcuts.user.js
@@ -18,13 +18,18 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "Keyboard Shortcuts Updated to avoid clashes with existing shortcuts and bug fixes"
-    WazeWrap.Interface.ShowScriptUpdate('WME School Shortcuts', GM_info.script.version, updateMessage);
-    const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
+    const updateMessage = "";
+    WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
+
+    const SHORTCUT_GROUP_ID =
+        `${SCRIPT_ID}-shortcuts`;
 
     const SHORTCUT_IDS = {
-        schoolPlace: `${SCRIPT_ID}-create-school-place`,
-        schoolZone: `${SCRIPT_ID}-create-school-zone`,
+        schoolPlace:
+            `${SCRIPT_ID}-create-school-place`,
+
+        schoolZone:
+            `${SCRIPT_ID}-create-school-zone`,
     };
 
     /*
@@ -41,22 +46,34 @@
 
     let sdk = null;
 
+
+    /*
+     * ---------------------------------------------------------
+     * Helpers
+     * ---------------------------------------------------------
+     */
+
     function isDrawCancelled(error) {
         if (!error) {
             return false;
         }
 
         const message =
-            String(error?.message || error);
+            String(error?.message || error).toLowerCase();
 
         return (
-            message.toLowerCase().includes("draw has been cancelled") ||
-            message.toLowerCase().includes("draw was cancelled") ||
-            message.toLowerCase().includes("drawing cancelled")
+            message.includes("draw has been cancelled") ||
+            message.includes("draw was cancelled") ||
+            message.includes("drawing cancelled")
         );
     }
 
+
     function selectVenue(venueId) {
+        if (venueId == null) {
+            return;
+        }
+
         try {
             sdk.Editing.setSelection({
                 selection: {
@@ -73,7 +90,12 @@
         }
     }
 
+
     function selectPermanentHazard(hazardId) {
+        if (hazardId == null) {
+            return;
+        }
+
         try {
             sdk.Editing.setSelection({
                 selection: {
@@ -90,15 +112,26 @@
         }
     }
 
+
+    /*
+     * ---------------------------------------------------------
+     * School Zone
+     * ---------------------------------------------------------
+     */
+
     async function createSchoolZone() {
         if (!sdk) {
             console.error(
                 `[${SCRIPT_NAME}] SDK is not available.`
             );
+
             return;
         }
 
-        if (!sdk.DataModel?.PermanentHazards?.addSchoolZone) {
+        if (
+            typeof sdk.DataModel?.PermanentHazards?.addSchoolZone !==
+            "function"
+        ) {
             console.error(
                 `[${SCRIPT_NAME}] School Zone creation is unavailable.`
             );
@@ -125,11 +158,13 @@
                     geometry,
                 });
 
-            setTimeout(() => {
-                selectPermanentHazard(
-                    schoolZoneId
-                );
-            }, 100);
+            if (schoolZoneId != null) {
+                setTimeout(() => {
+                    selectPermanentHazard(
+                        schoolZoneId
+                    );
+                }, 100);
+            }
 
         } catch (error) {
 
@@ -150,11 +185,19 @@
         }
     }
 
+
+    /*
+     * ---------------------------------------------------------
+     * School Area Place
+     * ---------------------------------------------------------
+     */
+
     async function createSchoolAreaPlace() {
         if (!sdk) {
             console.error(
                 `[${SCRIPT_NAME}] SDK is not available.`
             );
+
             return;
         }
 
@@ -172,9 +215,11 @@
                     geometry,
                 });
 
-            setTimeout(() => {
-                selectVenue(venueId);
-            }, 100);
+            if (venueId != null) {
+                setTimeout(() => {
+                    selectVenue(venueId);
+                }, 100);
+            }
 
         } catch (error) {
 
@@ -195,8 +240,17 @@
         }
     }
 
+
+    /*
+     * ---------------------------------------------------------
+     * Shortcut registration
+     * ---------------------------------------------------------
+     */
+
     function registerShortcutGroup() {
-        if (!sdk?.Shortcuts?.addShortcutGroup) {
+        if (
+            !sdk?.Shortcuts?.addShortcutGroup
+        ) {
             console.error(
                 `[${SCRIPT_NAME}] addShortcutGroup() is unavailable.`
             );
@@ -206,16 +260,26 @@
 
         try {
             sdk.Shortcuts.addShortcutGroup({
-                groupId: SHORTCUT_GROUP_ID,
-                groupName: SCRIPT_NAME,
+                groupId:
+                    SHORTCUT_GROUP_ID,
+
+                groupName:
+                    SCRIPT_NAME,
             });
 
             return true;
 
         } catch (error) {
+
+            /*
+             * The group may already exist.
+             * This is harmless.
+             */
+
             return true;
         }
     }
+
 
     function registerShortcut({
         shortcutId,
@@ -224,6 +288,11 @@
         callback,
     }) {
         try {
+
+            /*
+             * Remove an existing registration first.
+             */
+
             if (
                 sdk.Shortcuts.isShortcutRegistered({
                     shortcutId,
@@ -233,6 +302,12 @@
                     shortcutId,
                 });
             }
+
+
+            /*
+             * Try to register with the requested
+             * shortcut combination.
+             */
 
             try {
                 sdk.Shortcuts.createShortcut({
@@ -247,9 +322,16 @@
             } catch (error) {
 
                 console.warn(
-                    `[${SCRIPT_NAME}] Could not register ${description} with ${shortcutKeys}.`,
+                    `[${SCRIPT_NAME}] Could not register ` +
+                    `${description} with ${shortcutKeys}.`,
                     error
                 );
+
+
+                /*
+                 * Fall back to WME's shortcut manager
+                 * without explicitly specifying keys.
+                 */
 
                 sdk.Shortcuts.createShortcut({
                     callback,
@@ -262,6 +344,7 @@
             }
 
         } catch (error) {
+
             console.error(
                 `[${SCRIPT_NAME}] Failed to register ${description}.`,
                 error
@@ -270,6 +353,7 @@
             return false;
         }
     }
+
 
     function registerKeyboardShortcuts() {
 
@@ -288,6 +372,7 @@
                     createSchoolAreaPlace,
             });
 
+
         const schoolZone =
             registerShortcut({
                 shortcutId:
@@ -303,14 +388,31 @@
                     createSchoolZone,
             });
 
+
         return {
             schoolZone,
             schoolPlace,
         };
     }
 
+
+    /*
+     * ---------------------------------------------------------
+     * Initialisation
+     * ---------------------------------------------------------
+     */
+
     async function initialise() {
         try {
+
+            console.log(
+                `[${SCRIPT_NAME}] Initialising...`
+            );
+
+
+            /*
+             * WME SDK
+             */
 
             if (
                 typeof getWmeSdk !== "function"
@@ -320,60 +422,122 @@
                 );
             }
 
+
+            /*
+             * SDK+
+             */
+
+            if (
+                typeof initWmeSdkPlus !== "function"
+            ) {
+                throw new Error(
+                    "WME SDK+ is unavailable."
+                );
+            }
+
+
             const wmeSdk =
                 getWmeSdk({
-                    scriptId: SCRIPT_ID,
-                    scriptName: SCRIPT_NAME,
+                    scriptId:
+                        SCRIPT_ID,
+
+                    scriptName:
+                        SCRIPT_NAME,
                 });
+
+
+            /*
+             * Wait for WME itself to be ready.
+             */
 
             await wmeSdk.Events.once({
                 eventName: "wme-ready",
             });
 
+            console.log(
+                `[${SCRIPT_NAME}] WME SDK ready.`
+            );
+
+
+            /*
+             * Initialise SDK+ with only the hook
+             * required for School Zones.
+             */
+
+            console.log(
+                `[${SCRIPT_NAME}] Initialising WME SDK+...`
+            );
+
+            const sdkPlus =
+                await initWmeSdkPlus(
+                    wmeSdk,
+                    {
+                        hooks: [
+                            "DataModel.PermanentHazards",
+                        ],
+                    }
+                );
+
+
+            /*
+             * SDK+ normally enhances the existing
+             * WME SDK instance.
+             */
+
+            sdk =
+                sdkPlus ||
+                wmeSdk;
+
+
+            /*
+             * Make absolutely sure the School Zone
+             * API is available before registering
+             * the keyboard shortcuts.
+             */
+
             if (
-                typeof initWmeSdkPlus ===
+                typeof sdk.DataModel?.PermanentHazards?.addSchoolZone !==
                 "function"
             ) {
-                try {
-
-                    const sdkPlus =
-                        await initWmeSdkPlus(
-                            wmeSdk,
-                            {
-                                hooks: [
-                                    "DataModel.PermanentHazards",
-                                ],
-                            }
-                        );
-
-                    sdk =
-                        sdkPlus ||
-                        wmeSdk;
-
-                } catch (error) {
-
-                    sdk = wmeSdk;
-
-                    console.error(
-                        `[${SCRIPT_NAME}] SDK+ initialisation failed.`,
-                        error
-                    );
-                }
-
-            } else {
-
-                sdk = wmeSdk;
-
-                console.error(
-                    `[${SCRIPT_NAME}] initWmeSdkPlus() is unavailable.`
+                throw new Error(
+                    "WME SDK+ initialised, but " +
+                    "DataModel.PermanentHazards.addSchoolZone() " +
+                    "is unavailable."
                 );
             }
 
-            window.wmeSchoolShortcutsSdk = sdk;
+
+            console.log(
+                `[${SCRIPT_NAME}] School Zone API available.`
+            );
+
+
+            /*
+             * Expose SDK for debugging.
+             */
+
+            window.wmeSchoolShortcutsSdk =
+                sdk;
+
+
+            /*
+             * Register shortcuts.
+             */
 
             registerShortcutGroup();
 
-            registerKeyboardShortcuts();
+            const shortcuts =
+                registerKeyboardShortcuts();
+
+
+            console.log(
+                `[${SCRIPT_NAME}] Shortcuts registered.`,
+                shortcuts
+            );
+
+            console.log(
+                `[${SCRIPT_NAME}] Initialisation complete.`
+            );
 
         } catch (error) {
 
@@ -381,8 +545,21 @@
                 `[${SCRIPT_NAME}] Initialisation failed.`,
                 error
             );
+
+            alert(
+                `${SCRIPT_NAME}\n\n` +
+                `Initialisation failed:\n\n` +
+                `${error?.message || error}`
+            );
         }
     }
+
+
+    /*
+     * ---------------------------------------------------------
+     * Start
+     * ---------------------------------------------------------
+     */
 
     if (
         window.SDK_INITIALIZED &&
