@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.0.4-beta.1
+// @version     1.0.4
 // @description Keyboard shortcuts for creating School Zones and School Area Places in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
