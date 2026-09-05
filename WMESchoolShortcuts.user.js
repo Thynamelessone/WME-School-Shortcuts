@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.0.3
+// @version     1.0.4-beta.1
 // @description Keyboard shortcuts for creating School Zones and School Area Places in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -18,7 +18,7 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "";
+    const updateMessage = "Fix bug if drawing tool is already selected";
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
     const SHORTCUT_GROUP_ID =
@@ -112,134 +112,226 @@
         }
     }
 
+/********************************************************************
+ * CANCEL ANY ACTIVE WME DRAWING TOOL
+ ********************************************************************/
 
-    /*
-     * ---------------------------------------------------------
-     * School Zone
-     * ---------------------------------------------------------
-     */
-
-    async function createSchoolZone() {
-        if (!sdk) {
-            console.error(
-                `[${SCRIPT_NAME}] SDK is not available.`
-            );
-
+function cancelActiveDrawing() {
+    try {
+        if (!sdk?.Editing?.isDrawingInProgress()) {
             return;
         }
 
+        /*
+         * WME's native drawing controls are still available through
+         * the WME map object.
+         *
+         * Find any active OpenLayers drawing control and deactivate it.
+         */
         if (
-            typeof sdk.DataModel?.PermanentHazards?.addSchoolZone !==
-            "function"
+            typeof W !== "undefined" &&
+            W.map &&
+            Array.isArray(W.map.controls)
         ) {
-            console.error(
-                `[${SCRIPT_NAME}] School Zone creation is unavailable.`
-            );
+            W.map.controls.forEach((control) => {
+                if (
+                    control?.handler &&
+                    control.handler.active &&
+                    typeof control.deactivate === "function"
+                ) {
+                    control.deactivate();
+                }
+            });
+        }
 
-            alert(
-                `${SCRIPT_NAME}\n\n` +
-                `School Zone creation is unavailable.\n\n` +
-                `WME SDK+ did not initialise correctly.`
-            );
+    } catch (error) {
+        console.debug(
+            `[${SCRIPT_NAME}] Could not cancel active drawing.`,
+            error
+        );
+    }
+}
 
+
+/********************************************************************
+ * CREATE SCHOOL ZONE
+ ********************************************************************/
+
+async function createSchoolZone() {
+    if (!sdk) {
+        console.error(
+            `[${SCRIPT_NAME}] SDK is not available.`
+        );
+        return;
+    }
+
+    if (!sdk.DataModel?.PermanentHazards?.addSchoolZone) {
+        console.error(
+            `[${SCRIPT_NAME}] School Zone creation is unavailable.`
+        );
+
+        alert(
+            `${SCRIPT_NAME}\n\n` +
+            `School Zone creation is unavailable.\n\n` +
+            `WME SDK+ did not initialise correctly.`
+        );
+
+        return;
+    }
+
+    try {
+
+        /*
+         * If another WME drawing tool is already active,
+         * cancel it first.
+         */
+        cancelActiveDrawing();
+
+        /*
+         * Give WME a moment to finish deactivating the previous
+         * drawing control before starting the new one.
+         */
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        /*
+         * Start School Zone drawing.
+         */
+        const geometry =
+            await sdk.Map.drawPolygon();
+
+        /*
+         * User cancelled drawing.
+         */
+        if (!geometry) {
             return;
         }
 
-        try {
-            const geometry =
-                await sdk.Map.drawPolygon();
+        /*
+         * Create the School Zone.
+         */
+        const schoolZoneId =
+            await sdk.DataModel.PermanentHazards.addSchoolZone({
+                geometry,
+            });
 
-            if (!geometry) {
-                return;
-            }
+        console.log(
+            `[${SCRIPT_NAME}] School Zone created:`,
+            schoolZoneId
+        );
 
-            const schoolZoneId =
-                await sdk.DataModel.PermanentHazards.addSchoolZone({
-                    geometry,
-                });
-
-            if (schoolZoneId != null) {
-                setTimeout(() => {
-                    selectPermanentHazard(
-                        schoolZoneId
-                    );
-                }, 100);
-            }
-
-        } catch (error) {
-
-            if (isDrawCancelled(error)) {
-                return;
-            }
-
-            console.error(
-                `[${SCRIPT_NAME}] Failed to create School Zone.`,
-                error
+        /*
+         * Select the newly-created School Zone.
+         */
+        setTimeout(() => {
+            selectPermanentHazard(
+                schoolZoneId
             );
+        }, 100);
 
-            alert(
-                `${SCRIPT_NAME}\n\n` +
-                `Failed to create School Zone:\n\n` +
-                `${error?.message || error}`
-            );
-        }
-    }
+    } catch (error) {
 
-
-    /*
-     * ---------------------------------------------------------
-     * School Area Place
-     * ---------------------------------------------------------
-     */
-
-    async function createSchoolAreaPlace() {
-        if (!sdk) {
-            console.error(
-                `[${SCRIPT_NAME}] SDK is not available.`
-            );
-
+        /*
+         * User cancelled the drawing.
+         */
+        if (isDrawCancelled(error)) {
             return;
         }
 
-        try {
-            const geometry =
-                await sdk.Map.drawPolygon();
+        console.error(
+            `[${SCRIPT_NAME}] Failed to create School Zone.`,
+            error
+        );
 
-            if (!geometry) {
-                return;
-            }
+        alert(
+            `${SCRIPT_NAME}\n\n` +
+            `Failed to create School Zone:\n\n` +
+            `${error?.message || error}`
+        );
+    }
+}
 
-            const venueId =
-                sdk.DataModel.Venues.addVenue({
-                    category: "SCHOOL",
-                    geometry,
-                });
 
-            if (venueId != null) {
-                setTimeout(() => {
-                    selectVenue(venueId);
-                }, 100);
-            }
+/********************************************************************
+ * CREATE SCHOOL AREA PLACE
+ ********************************************************************/
 
-        } catch (error) {
-
-            if (isDrawCancelled(error)) {
-                return;
-            }
-
-            console.error(
-                `[${SCRIPT_NAME}] Failed to create School Area Place.`,
-                error
-            );
-
-            alert(
-                `${SCRIPT_NAME}\n\n` +
-                `Failed to create School Area Place:\n\n` +
-                `${error?.message || error}`
-            );
-        }
+async function createSchoolAreaPlace() {
+    if (!sdk) {
+        console.error(
+            `[${SCRIPT_NAME}] SDK is not available.`
+        );
+        return;
     }
 
+    try {
+
+        /*
+         * If another WME drawing tool is already active,
+         * cancel it first.
+         */
+        cancelActiveDrawing();
+
+        /*
+         * Give WME a moment to finish deactivating the previous
+         * drawing control before starting the new one.
+         */
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        /*
+         * Start School Area Place drawing.
+         */
+        const geometry =
+            await sdk.Map.drawPolygon();
+
+        /*
+         * User cancelled drawing.
+         */
+        if (!geometry) {
+            return;
+        }
+
+        /*
+         * Create the School Area Place.
+         */
+        const venueId =
+            sdk.DataModel.Venues.addVenue({
+                category: "SCHOOL",
+                geometry,
+            });
+
+        console.log(
+            `[${SCRIPT_NAME}] School Area Place created:`,
+            venueId
+        );
+
+        /*
+         * Select the newly-created School Area Place.
+         */
+        setTimeout(() => {
+            selectVenue(venueId);
+        }, 100);
+
+    } catch (error) {
+
+        /*
+         * User cancelled the drawing.
+         */
+        if (isDrawCancelled(error)) {
+            return;
+        }
+
+        console.error(
+            `[${SCRIPT_NAME}] Failed to create School Area Place.`,
+            error
+        );
+
+        alert(
+            `${SCRIPT_NAME}\n\n` +
+            `Failed to create School Area Place:\n\n` +
+            `${error?.message || error}`
+        );
+    }
+}
 
     /*
      * ---------------------------------------------------------
