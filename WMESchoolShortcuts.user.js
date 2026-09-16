@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.13
+// @version     1.1.0-beta.14
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -135,14 +135,39 @@
         }
     }
 
+    /**
+     * Extracts live, updated geometry from active WME map selection.
+     */
     function extractGeometry(feature) {
         if (!feature) return null;
+
+        const { W } = getWmeGlobals();
+        const targetId = String(feature.id ?? feature.venueId ?? feature.permanentHazardId ?? feature.attributes?.id ?? "");
+
+        // 1. Live modified OpenLayers feature geometry from W.selectionManager
+        try {
+            const selFeatures = W?.selectionManager?.getSelectedFeatures?.() || [];
+            for (const sf of selFeatures) {
+                const sfId = String(sf.model?.id ?? sf.model?.attributes?.id ?? sf.id ?? sf.attributes?.id ?? "");
+                if (!targetId || sfId === targetId || selFeatures.length === 1) {
+                    if (sf.geometry) return sf.geometry;
+                    if (typeof sf.getGeometry === "function") {
+                        const g = sf.getGeometry();
+                        if (g) return g;
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // 2. Direct getGeometry() call on feature object
         if (typeof feature.getGeometry === "function") {
             try {
                 const g = feature.getGeometry();
                 if (g) return g;
             } catch (e) {}
         }
+
+        // 3. Fallback to model/attribute properties
         return feature.geometry || feature.attributes?.geometry || feature.geom || null;
     }
 
@@ -477,7 +502,7 @@
 
     /*
      * ---------------------------------------------------------
-     * Deletion helpers (Enhanced with multi-API & Failsafes)
+     * Deletion helpers
      * ---------------------------------------------------------
      */
 
@@ -655,7 +680,13 @@
      * ---------------------------------------------------------
      */
 
-    async function convertVenueToSchoolZone(venue) {
+    async function convertVenueToSchoolZone(venueParam) {
+        const venue = getSelectedSchoolVenue() || venueParam;
+        if (!venue) {
+            alert(`${SCRIPT_NAME}\n\nCould not find selected School Area Place.`);
+            return;
+        }
+
         const rawGeometry = extractGeometry(venue);
         if (!rawGeometry) {
             alert(`${SCRIPT_NAME}\n\nCould not read the geometry of the selected School Area Place.`);
@@ -691,7 +722,13 @@
         }
     }
 
-    async function convertHazardToSchoolVenue(hazard) {
+    async function convertHazardToSchoolVenue(hazardParam) {
+        const hazard = getSelectedSchoolZoneHazard() || hazardParam;
+        if (!hazard) {
+            alert(`${SCRIPT_NAME}\n\nCould not find selected School Zone.`);
+            return;
+        }
+
         const rawGeometry = extractGeometry(hazard);
         if (!rawGeometry) {
             alert(`${SCRIPT_NAME}\n\nCould not read the geometry of the selected School Zone.`);
