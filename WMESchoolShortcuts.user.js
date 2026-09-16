@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.6
+// @version     1.1.0-beta.7
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -40,6 +40,13 @@
 
     let sdk = null;
     let observer = null;
+
+    // Helper to safely resolve legacy Waze / W globals from window
+    function getWmeGlobals() {
+        const W = typeof window !== "undefined" ? window.W : undefined;
+        const Waze = typeof window !== "undefined" ? (window.Waze || W) : W;
+        return { W, Waze };
+    }
 
     /*
      * ---------------------------------------------------------
@@ -82,7 +89,8 @@
     function cancelActiveDrawing() {
         try {
             if (!sdk?.Editing?.isDrawingInProgress()) return;
-            if (typeof W !== "undefined" && W.map && Array.isArray(W.map.controls)) {
+            const { W } = getWmeGlobals();
+            if (W && W.map && Array.isArray(W.map.controls)) {
                 W.map.controls.forEach((control) => {
                     if (control?.handler && control.handler.active && typeof control.deactivate === "function") {
                         control.deactivate();
@@ -234,15 +242,18 @@
         }
 
         // Internal WME Action Fallback
-        if (typeof W !== "undefined" && W.model?.actionManager) {
+        const { W, Waze } = getWmeGlobals();
+        const req = typeof require === "function" ? require : window.require;
+
+        if (W && W.model?.actionManager) {
             let AddVenueAction = Waze?.Action?.AddVenue || W?.Action?.AddVenue;
             let VenueFeature = Waze?.Feature?.Vector?.Venue || W?.Feature?.Vector?.Venue;
 
-            if (!AddVenueAction && typeof require === "function") {
-                try { AddVenueAction = require("Waze/Action/AddVenue"); } catch (e) {}
+            if (!AddVenueAction && typeof req === "function") {
+                try { AddVenueAction = req("Waze/Action/AddVenue"); } catch (e) {}
             }
-            if (!VenueFeature && typeof require === "function") {
-                try { VenueFeature = require("Waze/Feature/Vector/Venue"); } catch (e) {}
+            if (!VenueFeature && typeof req === "function") {
+                try { VenueFeature = req("Waze/Feature/Vector/Venue"); } catch (e) {}
             }
 
             if (AddVenueAction && VenueFeature) {
@@ -297,15 +308,18 @@
         }
 
         // 2. Internal WME Action Fallback
-        if (typeof W !== "undefined" && W.model?.actionManager) {
+        const { W, Waze } = getWmeGlobals();
+        const req = typeof require === "function" ? require : window.require;
+
+        if (W && W.model?.actionManager) {
             let AddHazardAction = Waze?.Action?.AddPermanentHazard || W?.Action?.AddPermanentHazard;
             let HazardFeature = Waze?.Feature?.Vector?.PermanentHazard || W?.Feature?.Vector?.PermanentHazard;
 
-            if (!AddHazardAction && typeof require === "function") {
-                try { AddHazardAction = require("Waze/Action/AddPermanentHazard"); } catch (e) {}
+            if (!AddHazardAction && typeof req === "function") {
+                try { AddHazardAction = req("Waze/Action/AddPermanentHazard"); } catch (e) {}
             }
-            if (!HazardFeature && typeof require === "function") {
-                try { HazardFeature = require("Waze/Feature/Vector/PermanentHazard"); } catch (e) {}
+            if (!HazardFeature && typeof req === "function") {
+                try { HazardFeature = req("Waze/Feature/Vector/PermanentHazard"); } catch (e) {}
             }
 
             if (AddHazardAction && HazardFeature) {
@@ -377,6 +391,7 @@
         }
 
         try {
+            const { W } = getWmeGlobals();
             const internal =
                 W?.model?.permanentHazards?.objects?.[hazardId] ||
                 W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
@@ -457,7 +472,10 @@
         }
 
         // Attempt 3: WME Action Manager via internal action classes
-        if (typeof W !== "undefined" && W.model?.actionManager) {
+        const { W, Waze } = getWmeGlobals();
+        const req = typeof require === "function" ? require : window.require;
+
+        if (W && W.model?.actionManager) {
             const hazardObj =
                 W.model.permanentHazards?.objects?.[numId] ||
                 W.model.permanentHazards?.objects?.[strId] ||
@@ -472,7 +490,7 @@
                     Waze?.Action?.DeleteObject ||
                     W?.Action?.DeleteObject;
 
-                if (!ActionClass && typeof require === "function") {
+                if (!ActionClass && typeof req === "function") {
                     const modules = [
                         "Waze/Action/DeletePermanentHazard",
                         "Waze/Action/DeleteFeature",
@@ -480,7 +498,7 @@
                     ];
                     for (const mod of modules) {
                         try {
-                            ActionClass = require(mod);
+                            ActionClass = req(mod);
                             if (ActionClass) break;
                         } catch (e) {}
                     }
