@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.5
+// @version     1.1.0-beta.6
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -107,7 +107,11 @@
             try {
                 const vertices = rawGeometry.getVertices();
                 if (Array.isArray(vertices)) {
-                    points = vertices.map((v) => ({ x: Number(v.x), y: Number(v.y) }));
+                    points = vertices.map((v) => ({
+                        x: Number(v.x),
+                        y: Number(v.y),
+                        z: (v.z !== undefined && !isNaN(Number(v.z))) ? Number(v.z) : 0,
+                    }));
                 }
             } catch (e) {}
         }
@@ -119,10 +123,13 @@
                 const ring = components[0];
                 const ringPts = ring?.components || ring?.attributes?.components;
                 if (Array.isArray(ringPts)) {
-                    points = ringPts.map((pt) => ({
-                        x: Number(pt.x ?? pt.attributes?.x),
-                        y: Number(pt.y ?? pt.attributes?.y),
-                    }));
+                    points = ringPts.map((pt) => {
+                        const x = Number(pt.x ?? pt.attributes?.x);
+                        const y = Number(pt.y ?? pt.attributes?.y);
+                        const rawZ = pt.z ?? pt.attributes?.z;
+                        const z = (rawZ !== undefined && !isNaN(Number(rawZ))) ? Number(rawZ) : 0;
+                        return { x, y, z };
+                    });
                 }
             }
         }
@@ -134,20 +141,28 @@
                 points = ring.map((coord) => ({
                     x: Number(coord[0]),
                     y: Number(coord[1]),
+                    z: (coord[2] !== undefined && !isNaN(Number(coord[2]))) ? Number(coord[2]) : 0,
                 }));
             }
         }
 
-        // Filter out NaNs
+        // Filter out invalid numbers for x & y
         points = points.filter((p) => !isNaN(p.x) && !isNaN(p.y));
 
         if (points.length < 3) return [];
+
+        // Ensure all z properties are numeric (0 instead of NaN or undefined)
+        points = points.map((p) => ({
+            x: p.x,
+            y: p.y,
+            z: isNaN(p.z) ? 0 : p.z,
+        }));
 
         // Ensure closed ring
         const first = points[0];
         const last = points[points.length - 1];
         if (first.x !== last.x || first.y !== last.y) {
-            points.push({ x: first.x, y: first.y });
+            points.push({ x: first.x, y: first.y, z: first.z });
         }
 
         return points;
@@ -179,7 +194,11 @@
 
         let olPolygon = null;
         if (typeof OpenLayers !== "undefined" && OpenLayers.Geometry?.Point && OpenLayers.Geometry?.LinearRing && OpenLayers.Geometry?.Polygon) {
-            const olPoints = pts.map((p) => new OpenLayers.Geometry.Point(p.x, p.y));
+            const olPoints = pts.map((p) => {
+                const pt = new OpenLayers.Geometry.Point(p.x, p.y, p.z);
+                pt.z = p.z;
+                return pt;
+            });
             const ring = new OpenLayers.Geometry.LinearRing(olPoints);
             olPolygon = new OpenLayers.Geometry.Polygon([ring]);
             cleanOpenLayersObject(olPolygon);
@@ -187,13 +206,13 @@
 
         const geojsonPolygon = {
             type: "Polygon",
-            coordinates: [pts.map((p) => [p.x, p.y])],
+            coordinates: [pts.map((p) => [p.x, p.y, p.z])],
         };
 
         const plainComponentsPolygon = {
             components: [
                 {
-                    components: pts.map((p) => ({ x: p.x, y: p.y })),
+                    components: pts.map((p) => ({ x: p.x, y: p.y, z: p.z })),
                 },
             ],
         };
@@ -248,7 +267,11 @@
 
         let olPolygon = null;
         if (typeof OpenLayers !== "undefined" && OpenLayers.Geometry?.Point && OpenLayers.Geometry?.LinearRing && OpenLayers.Geometry?.Polygon) {
-            const olPoints = pts.map((p) => new OpenLayers.Geometry.Point(p.x, p.y));
+            const olPoints = pts.map((p) => {
+                const pt = new OpenLayers.Geometry.Point(p.x, p.y, p.z);
+                pt.z = p.z;
+                return pt;
+            });
             const ring = new OpenLayers.Geometry.LinearRing(olPoints);
             olPolygon = new OpenLayers.Geometry.Polygon([ring]);
             cleanOpenLayersObject(olPolygon);
@@ -256,7 +279,7 @@
 
         const geojsonPolygon = {
             type: "Polygon",
-            coordinates: [pts.map((p) => [p.x, p.y])],
+            coordinates: [pts.map((p) => [p.x, p.y, p.z])],
         };
 
         const formatsToTry = [olPolygon, geojsonPolygon, rawGeometry].filter(Boolean);
@@ -392,58 +415,98 @@
      */
 
     async function deleteVenueById(venueId) {
-        await sdk.DataModel.Venues.deleteVenue({ venueId: String(venueId) });
+        if (typeof sdk?.DataModel?.Venues?.deleteVenue === "function") {
+            try {
+                await sdk.DataModel.Venues.deleteVenue({ venueId: String(venueId) });
+                return true;
+            } catch (e) {}
+        }
+        if (typeof sdk?.Editing?.deleteFeature === "function") {
+            try {
+                await sdk.Editing.deleteFeature({ id: String(venueId), objectType: "venue" });
+                return true;
+            } catch (e) {}
+        }
+        return false;
     }
 
     async function deletePermanentHazardById(hazardId) {
-        const attempts = [
-            async () => sdk?.DataModel?.PermanentHazards?.deletePermanentHazard?.({ permanentHazardId: Number(hazardId) }),
-            async () => sdk?.DataModel?.PermanentHazards?.deleteSchoolZone?.({ permanentHazardId: Number(hazardId) }),
-            async () => sdk?.DataModel?.PermanentHazards?.delete?.({ id: Number(hazardId) }),
-            async () => {
-                if (!W?.model?.actionManager) {
-                    throw new Error("Internal action manager unavailable.");
-                }
-                const hazardObj =
-                    W.model.permanentHazards?.objects?.[hazardId] ||
-                    W.model.permanentHazards?.getObjectById?.(Number(hazardId));
-                if (!hazardObj) {
-                    throw new Error("Could not locate internal hazard object.");
-                }
+        const numId = Number(hazardId);
+        const strId = String(hazardId);
 
-                let DeleteAction =
+        // Attempt 1: sdk.Editing.deleteFeature / deleteObject
+        if (typeof sdk?.Editing?.deleteFeature === "function") {
+            try {
+                await sdk.Editing.deleteFeature({ id: numId, objectType: "permanentHazard" });
+                return true;
+            } catch (e) {}
+        }
+
+        // Attempt 2: SDK DataModel methods
+        if (typeof sdk?.DataModel?.PermanentHazards?.deletePermanentHazard === "function") {
+            try {
+                await sdk.DataModel.PermanentHazards.deletePermanentHazard({ permanentHazardId: numId });
+                return true;
+            } catch (e) {}
+        }
+        if (typeof sdk?.DataModel?.PermanentHazards?.deleteSchoolZone === "function") {
+            try {
+                await sdk.DataModel.PermanentHazards.deleteSchoolZone({ permanentHazardId: numId });
+                return true;
+            } catch (e) {}
+        }
+
+        // Attempt 3: WME Action Manager via internal action classes
+        if (typeof W !== "undefined" && W.model?.actionManager) {
+            const hazardObj =
+                W.model.permanentHazards?.objects?.[numId] ||
+                W.model.permanentHazards?.objects?.[strId] ||
+                W.model.permanentHazards?.getObjectById?.(numId);
+
+            if (hazardObj) {
+                let ActionClass =
                     Waze?.Action?.DeletePermanentHazard ||
                     W?.Action?.DeletePermanentHazard ||
+                    Waze?.Action?.DeleteFeature ||
+                    W?.Action?.DeleteFeature ||
                     Waze?.Action?.DeleteObject ||
                     W?.Action?.DeleteObject;
 
-                if (!DeleteAction && typeof require === "function") {
+                if (!ActionClass && typeof require === "function") {
+                    const modules = [
+                        "Waze/Action/DeletePermanentHazard",
+                        "Waze/Action/DeleteFeature",
+                        "Waze/Action/DeleteObject",
+                    ];
+                    for (const mod of modules) {
+                        try {
+                            ActionClass = require(mod);
+                            if (ActionClass) break;
+                        } catch (e) {}
+                    }
+                }
+
+                if (ActionClass) {
                     try {
-                        DeleteAction = require("Waze/Action/DeletePermanentHazard") || require("Waze/Action/DeleteObject");
+                        const action = new ActionClass(hazardObj);
+                        W.model.actionManager.add(action);
+                        return true;
+                    } catch (e) {
+                        console.warn(`[${SCRIPT_NAME}] ActionClass deletion failed:`, e);
+                    }
+                }
+
+                // Direct model removal fallback
+                if (typeof W.model.permanentHazards.remove === "function") {
+                    try {
+                        W.model.permanentHazards.remove(hazardObj);
+                        return true;
                     } catch (e) {}
                 }
-
-                if (!DeleteAction) {
-                    throw new Error("Delete action constructor unavailable.");
-                }
-
-                const action = new DeleteAction(hazardObj);
-                W.model.actionManager.add(action);
-            },
-        ];
-
-        let lastError = null;
-
-        for (const attempt of attempts) {
-            try {
-                await attempt();
-                return true;
-            } catch (error) {
-                lastError = error;
             }
         }
 
-        console.error(`[${SCRIPT_NAME}] Every deletion method failed for hazard ${hazardId}.`, lastError);
+        console.error(`[${SCRIPT_NAME}] Every deletion method failed for hazard ${hazardId}.`);
         return false;
     }
 
@@ -802,7 +865,6 @@
 
             sdk = wmeSdk;
 
-            // Non-blocking attempt to initialize WME SDK+
             if (typeof initWmeSdkPlus === "function") {
                 try {
                     const sdkPlus = await initWmeSdkPlus(wmeSdk, {
