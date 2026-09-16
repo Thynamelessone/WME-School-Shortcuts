@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.9
+// @version     1.1.0-beta.10
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -362,20 +362,37 @@
             return null;
         }
 
-        const venueId = selection.ids[0];
+        const venueId = String(selection.ids[0]);
+        let venue = null;
 
         try {
-            const venue = sdk.DataModel.Venues.getById({ venueId: String(venueId) });
-            if (!venue) return null;
-
-            const categories = venue.categories || (venue.category ? [venue.category] : []);
-            if (!categories.includes("SCHOOL")) return null;
-
-            return venue;
+            if (typeof sdk?.DataModel?.Venues?.getById === "function") {
+                venue = sdk.DataModel.Venues.getById({ venueId });
+            }
         } catch (error) {
-            console.error(`[${SCRIPT_NAME}] Failed to read selected venue.`, error);
-            return null;
+            console.debug(`[${SCRIPT_NAME}] Venues.getById failed, using fallback.`, error);
         }
+
+        if (!venue) {
+            const { W } = getWmeGlobals();
+            try {
+                venue = W?.model?.venues?.objects?.[venueId] || W?.model?.venues?.getObjectById?.(venueId);
+            } catch (e) {}
+        }
+
+        if (!venue) return null;
+
+        const rawCategories = venue.categories || venue.attributes?.categories || (venue.category ? [venue.category] : []);
+        const categoriesArray = Array.isArray(rawCategories) ? rawCategories : [rawCategories];
+
+        const isSchool = categoriesArray.some((c) => {
+            const val = String(c?.id || c || "").toUpperCase();
+            return val.includes("SCHOOL");
+        });
+
+        if (!isSchool) return null;
+
+        return venue;
     }
 
     /*
@@ -413,7 +430,7 @@
             return;
         }
 
-        const venueId = venue.id ?? venue.venueId;
+        const venueId = venue.id ?? venue.venueId ?? venue.attributes?.id;
 
         try {
             const schoolZoneId = await addSchoolZone(rawGeometry);
@@ -573,11 +590,23 @@
     }
 
     function findVenuePanel() {
-        return (
-            document.querySelector("#venue-edit-general") ||
-            document.querySelector(".venue-edit-general") ||
-            document.querySelector("wz-panel[data-testid='venue-feature-editor'] .feature-editor-panel-content")
-        );
+        const selectors = [
+            "#venue-edit-general",
+            ".venue-edit-general",
+            "wz-panel[data-testid='venue-feature-editor'] .feature-editor-panel-content",
+            "wz-panel[data-testid='venue-feature-editor']",
+            ".venue-feature-editor",
+            "#venue-feature-editor",
+            "[data-testid='venue-feature-editor']",
+            "#edit-panel .tab-content",
+            "#sidebar .feature-editor",
+            "#edit-panel"
+        ];
+        for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el) return el;
+        }
+        return null;
     }
 
     function injectVenueConvertButton() {
@@ -585,22 +614,23 @@
         const existing = document.getElementById(CONVERT_BUTTON_IDS.toSchoolZone);
 
         if (!venue) {
-            if (existing) {
-                existing.remove();
+            if (existing) existing.remove();
+            return false;
+        }
+
+        const venueId = String(venue.id ?? venue.venueId ?? venue.attributes?.id ?? "");
+        const panel = findVenuePanel();
+
+        if (!panel) {
+            return false;
+        }
+
+        if (existing) {
+            if (existing.dataset.featureId === venueId && existing.isConnected && existing.parentElement === panel) {
                 return true;
             }
-            return false;
+            existing.remove();
         }
-
-        const venueId = String(venue.id ?? venue.venueId ?? "");
-        const panel = findVenuePanel();
-        if (!panel) return false;
-
-        if (existing && existing.dataset.featureId === venueId && existing.parentElement === panel) {
-            return false;
-        }
-
-        if (existing) existing.remove();
 
         const button = makeConvertButton({
             id: CONVERT_BUTTON_IDS.toSchoolZone,
@@ -609,7 +639,11 @@
         });
         button.dataset.featureId = venueId;
 
-        panel.insertBefore(button, panel.firstChild);
+        if (panel.firstChild) {
+            panel.insertBefore(button, panel.firstChild);
+        } else {
+            panel.appendChild(button);
+        }
         return true;
     }
 
@@ -617,7 +651,11 @@
         observer?.disconnect();
 
         try {
-            injectVenueConvertButton();
+            const injected = injectVenueConvertButton();
+            if (!injected && getSelectedSchoolVenue()) {
+                // Retry short delay in case WME panel renders asynchronously
+                setTimeout(injectVenueConvertButton, 350);
+            }
         } finally {
             const sidebar = document.getElementById("sidebar") || document.body;
             observer?.observe(sidebar, { childList: true, subtree: true });
