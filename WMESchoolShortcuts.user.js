@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.2
+// @version     1.1.0-beta.3
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -18,7 +18,7 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "Fix a MutationObserver feedback loop that could freeze/crash WME, and loosen School Zone detection";
+    const updateMessage = "New Feature: Convert Area Places to School Zones and vice versa";
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
     const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
@@ -43,7 +43,7 @@
 
     /*
      * ---------------------------------------------------------
-     * Helpers
+     * Helpers & Geometry Sanitizer
      * ---------------------------------------------------------
      */
 
@@ -94,6 +94,41 @@
         }
     }
 
+    function extractGeometry(feature) {
+        return feature?.geometry || feature?.attributes?.geometry || null;
+    }
+
+    function getCleanGeometry(rawGeometry) {
+        if (!rawGeometry) return null;
+
+        // Clone the geometry so we don't mutate the live feature on the map
+        let geo = typeof rawGeometry.clone === "function" ? rawGeometry.clone() : rawGeometry;
+
+        // Remove circular 'parent' references common in OpenLayers geometry trees
+        function stripParent(obj, visited = new WeakSet()) {
+            if (!obj || typeof obj !== "object") return;
+            if (visited.has(obj)) return;
+            visited.add(obj);
+
+            if ("parent" in obj) {
+                try {
+                    delete obj.parent;
+                } catch (e) {
+                    obj.parent = null;
+                }
+            }
+
+            if (Array.isArray(obj.components)) {
+                for (const child of obj.components) {
+                    stripParent(child, visited);
+                }
+            }
+        }
+
+        stripParent(geo);
+        return geo;
+    }
+
     /*
      * ---------------------------------------------------------
      * Selection readers
@@ -139,9 +174,6 @@
 
         const hazardId = selection.ids[0];
 
-        // ⚠️ getById() on PermanentHazards is documented in beta but may not exist
-        // in the production SDK depending on version. Fall back to searching the
-        // WME internal model if the SDK call isn't available.
         try {
             if (typeof sdk.DataModel.PermanentHazards.getById === "function") {
                 const hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: Number(hazardId) });
@@ -151,20 +183,12 @@
             console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById() unavailable, trying fallback.`, error);
         }
 
-        // ⚠️ Fallback: reach into WME's internal model. Selector/property names
-        // here may need adjusting if Waze changes their internal model shape.
         try {
             const internal =
                 W?.model?.permanentHazards?.objects?.[hazardId] ||
                 W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
 
             if (internal) {
-                // ⚠️ We don't have a verified field name/value for "this hazard
-                // is a school zone" on this WME version. Try a few plausible
-                // spots. Only actively HIDE the button when a field clearly
-                // says this is some other kind of hazard (e.g. a speed
-                // camera) — otherwise show it, since a wrong-but-visible
-                // button is more useful to debug than a silently missing one.
                 const typeCandidates = [
                     internal?.attributes?.type,
                     internal?.type,
@@ -184,8 +208,6 @@
                     return null;
                 }
 
-                // Only return it if we actually have geometry to work with —
-                // an object without geometry is useless for conversion.
                 if (extractGeometry(internal)) {
                     return internal;
                 }
@@ -199,13 +221,9 @@
         return null;
     }
 
-    function extractGeometry(feature) {
-        return feature?.geometry || feature?.attributes?.geometry || null;
-    }
-
     /*
      * ---------------------------------------------------------
-     * Deletion helpers (the uncertain part)
+     * Deletion helpers
      * ---------------------------------------------------------
      */
 
@@ -215,14 +233,11 @@
 
     async function deletePermanentHazardById(hazardId) {
         const attempts = [
-            // ⚠️ None of these are guaranteed to exist — tried in order,
-            // first one that doesn't throw "wins".
             async () => sdk.DataModel.PermanentHazards.deletePermanentHazard({ permanentHazardId: Number(hazardId) }),
             async () => sdk.DataModel.PermanentHazards.deleteSchoolZone({ permanentHazardId: Number(hazardId) }),
             async () => sdk.DataModel.PermanentHazards.delete({ id: Number(hazardId) }),
             async () => {
-                // Last-resort fallback via WME's internal action system.
-                if (typeof W === "undefined" || !W.model?.actionManager) {
+                if (!W?.model?.actionManager) {
                     throw new Error("Internal action manager unavailable.");
                 }
                 const hazardObj =
@@ -231,10 +246,22 @@
                 if (!hazardObj) {
                     throw new Error("Could not locate internal hazard object.");
                 }
-                if (typeof Waze === "undefined" || !Waze.Action?.DeletePermanentHazard) {
-                    throw new Error("Waze.Action.DeletePermanentHazard unavailable.");
+
+                let DeleteAction =
+                    Waze?.Action?.DeletePermanentHazard ||
+                    W?.Action?.DeletePermanentHazard;
+
+                if (!DeleteAction && typeof require === "function") {
+                    try {
+                        DeleteAction = require("Waze/Action/DeletePermanentHazard");
+                    } catch (e) {}
                 }
-                const action = new Waze.Action.DeletePermanentHazard(hazardObj);
+
+                if (!DeleteAction) {
+                    throw new Error("DeletePermanentHazard action constructor unavailable.");
+                }
+
+                const action = new DeleteAction(hazardObj);
                 W.model.actionManager.add(action);
             },
         ];
@@ -266,23 +293,19 @@
             return;
         }
 
-        const geometry = extractGeometry(venue);
-        if (!geometry) {
+        const rawGeometry = extractGeometry(venue);
+        if (!rawGeometry) {
             alert(`${SCRIPT_NAME}\n\nCould not read the geometry of the selected School Area Place.`);
             return;
         }
 
+        const geometry = getCleanGeometry(rawGeometry);
         const venueId = venue.id ?? venue.venueId;
 
         try {
             const schoolZoneId = await sdk.DataModel.PermanentHazards.addSchoolZone({ geometry });
 
-            const deleted = await deleteVenueById(venueId);
-            if (deleted === false) {
-                // deleteVenueById throws on failure rather than returning false,
-                // this branch only guards against a future signature change.
-                console.warn(`[${SCRIPT_NAME}] Venue deletion reported failure but no error was thrown.`);
-            }
+            await deleteVenueById(venueId);
 
             console.log(`[${SCRIPT_NAME}] Converted School Area Place ${venueId} -> School Zone ${schoolZoneId}.`);
 
@@ -298,12 +321,13 @@
     }
 
     async function convertHazardToSchoolVenue(hazard) {
-        const geometry = extractGeometry(hazard);
-        if (!geometry) {
+        const rawGeometry = extractGeometry(hazard);
+        if (!rawGeometry) {
             alert(`${SCRIPT_NAME}\n\nCould not read the geometry of the selected School Zone.`);
             return;
         }
 
+        const geometry = getCleanGeometry(rawGeometry);
         const hazardId = hazard.id ?? hazard.permanentHazardId;
 
         try {
@@ -412,7 +436,7 @@
             sdk.Shortcuts.addShortcutGroup({ groupId: SHORTCUT_GROUP_ID, groupName: SCRIPT_NAME });
             return true;
         } catch (error) {
-            return true; // group probably already exists
+            return true;
         }
     }
 
@@ -488,8 +512,6 @@
     }
 
     function findVenuePanel() {
-        // ⚠️ Selector guess based on the original script's comment.
-        // Adjust if WME's venue editor panel structure has changed.
         return (
             document.querySelector("#venue-edit-general") ||
             document.querySelector(".venue-edit-general") ||
@@ -498,15 +520,12 @@
     }
 
     function findHazardPanel() {
-        // ⚠️ Selector guess based on the original script's comment.
-        // Adjust if WME's permanent hazard editor panel structure has changed.
         return (
             document.querySelector(".permanent-hazard-feature-editor") ||
             document.querySelector("wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content")
         );
     }
 
-    // Returns true if it actually changed the DOM, false if it left things alone.
     function injectVenueConvertButton() {
         const venue = getSelectedSchoolVenue();
         const existing = document.getElementById(CONVERT_BUTTON_IDS.toSchoolZone);
@@ -523,8 +542,6 @@
         const panel = findVenuePanel();
         if (!panel) return false;
 
-        // Already correctly placed for this exact venue — do nothing,
-        // so we don't generate a mutation that re-triggers the observer.
         if (existing && existing.dataset.featureId === venueId && existing.parentElement === panel) {
             return false;
         }
@@ -576,9 +593,6 @@
     }
 
     function refreshConvertButtons() {
-        // Disconnect while we mutate so our own inserts/removes don't
-        // re-trigger the MutationObserver (this was causing an infinite
-        // loop / tab freeze on selection or venue creation).
         observer?.disconnect();
 
         try {
@@ -602,7 +616,6 @@
     }
 
     function watchFeatureEditor() {
-        // React to WME's own selection-changed event when available...
         try {
             sdk.Events.on({
                 eventName: "wme-selection-changed",
@@ -612,11 +625,6 @@
             console.debug(`[${SCRIPT_NAME}] wme-selection-changed event unavailable.`, error);
         }
 
-        // ...and also fall back to a debounced DOM observer, since the editor
-        // panel is rendered asynchronously and selector-based hooks can be
-        // timing-sensitive. Debouncing (via scheduleRefresh) plus disconnecting
-        // during our own DOM writes (in refreshConvertButtons) prevents the
-        // observer from reacting to mutations we caused ourselves.
         observer = new MutationObserver(() => {
             scheduleRefresh();
         });
