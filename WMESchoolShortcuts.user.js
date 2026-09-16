@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.11
+// @version     1.1.0-beta.12
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -46,6 +46,35 @@
         const W = typeof window !== "undefined" ? window.W : undefined;
         const Waze = typeof window !== "undefined" ? (window.Waze || W) : W;
         return { W, Waze };
+    }
+
+    // Helper to resolve WME Delete Action Class for ActionManager
+    function getDeleteActionClass() {
+        const { W, Waze } = getWmeGlobals();
+        const req = typeof require === "function" ? require : window.require;
+
+        let ActionClass =
+            Waze?.Action?.DeleteObject ||
+            W?.Action?.DeleteObject ||
+            Waze?.Action?.DeleteFeature ||
+            W?.Action?.DeleteFeature ||
+            Waze?.Action?.DeletePermanentHazard ||
+            W?.Action?.DeletePermanentHazard;
+
+        if (!ActionClass && typeof req === "function") {
+            const modules = [
+                "Waze/Action/DeleteObject",
+                "Waze/Action/DeleteFeature",
+                "Waze/Action/DeletePermanentHazard",
+            ];
+            for (const mod of modules) {
+                try {
+                    ActionClass = req(mod);
+                    if (ActionClass) break;
+                } catch (e) {}
+            }
+        }
+        return ActionClass;
     }
 
     /*
@@ -449,18 +478,41 @@
      */
 
     async function deleteVenueById(venueId) {
+        const strId = String(venueId);
+        const numId = Number(venueId);
+
         if (typeof sdk?.DataModel?.Venues?.deleteVenue === "function") {
             try {
-                await sdk.DataModel.Venues.deleteVenue({ venueId: String(venueId) });
+                await sdk.DataModel.Venues.deleteVenue({ venueId: strId });
                 return true;
             } catch (e) {}
         }
         if (typeof sdk?.Editing?.deleteFeature === "function") {
             try {
-                await sdk.Editing.deleteFeature({ id: String(venueId), objectType: "venue" });
+                await sdk.Editing.deleteFeature({ id: strId, objectType: "venue" });
                 return true;
             } catch (e) {}
         }
+
+        const { W } = getWmeGlobals();
+        if (W && W.model?.actionManager && W.model?.venues) {
+            const venueObj =
+                W.model.venues.objects?.[strId] ||
+                W.model.venues.objects?.[numId] ||
+                (typeof W.model.venues.getObjectById === "function" ? W.model.venues.getObjectById(strId) : null);
+
+            if (venueObj) {
+                const ActionClass = getDeleteActionClass();
+                if (ActionClass) {
+                    try {
+                        const action = new ActionClass(venueObj);
+                        W.model.actionManager.add(action);
+                        return true;
+                    } catch (e) {}
+                }
+            }
+        }
+
         return false;
     }
 
@@ -468,6 +520,19 @@
         const numId = Number(hazardId);
         const strId = String(hazardId);
 
+        // 1. Try SDK PermanentHazards / Editing methods
+        if (typeof sdk?.DataModel?.PermanentHazards?.deleteSchoolZone === "function") {
+            try {
+                await sdk.DataModel.PermanentHazards.deleteSchoolZone({ permanentHazardId: numId });
+                return true;
+            } catch (e) {}
+        }
+        if (typeof sdk?.DataModel?.PermanentHazards?.deletePermanentHazard === "function") {
+            try {
+                await sdk.DataModel.PermanentHazards.deletePermanentHazard({ permanentHazardId: numId });
+                return true;
+            } catch (e) {}
+        }
         if (typeof sdk?.Editing?.deleteFeature === "function") {
             try {
                 await sdk.Editing.deleteFeature({ id: numId, objectType: "permanentHazard" });
@@ -475,64 +540,24 @@
             } catch (e) {}
         }
 
-        if (typeof sdk?.DataModel?.PermanentHazards?.deletePermanentHazard === "function") {
-            try {
-                await sdk.DataModel.PermanentHazards.deletePermanentHazard({ permanentHazardId: numId });
-                return true;
-            } catch (e) {}
-        }
-        if (typeof sdk?.DataModel?.PermanentHazards?.deleteSchoolZone === "function") {
-            try {
-                await sdk.DataModel.PermanentHazards.deleteSchoolZone({ permanentHazardId: numId });
-                return true;
-            } catch (e) {}
-        }
-
-        const { W, Waze } = getWmeGlobals();
-        const req = typeof require === "function" ? require : window.require;
-
-        if (W && W.model?.actionManager) {
+        // 2. ActionManager fallback (Ensures changes persist to WME save queue)
+        const { W } = getWmeGlobals();
+        if (W && W.model?.actionManager && W.model?.permanentHazards) {
             const hazardObj =
-                W.model.permanentHazards?.objects?.[numId] ||
-                W.model.permanentHazards?.objects?.[strId] ||
-                W.model.permanentHazards?.getObjectById?.(numId);
+                W.model.permanentHazards.objects?.[numId] ||
+                W.model.permanentHazards.objects?.[strId] ||
+                (typeof W.model.permanentHazards.getObjectById === "function" ? W.model.permanentHazards.getObjectById(numId) : null);
 
             if (hazardObj) {
-                let ActionClass =
-                    Waze?.Action?.DeletePermanentHazard ||
-                    W?.Action?.DeletePermanentHazard ||
-                    Waze?.Action?.DeleteFeature ||
-                    W?.Action?.DeleteFeature ||
-                    Waze?.Action?.DeleteObject ||
-                    W?.Action?.DeleteObject;
-
-                if (!ActionClass && typeof req === "function") {
-                    const modules = [
-                        "Waze/Action/DeletePermanentHazard",
-                        "Waze/Action/DeleteFeature",
-                        "Waze/Action/DeleteObject",
-                    ];
-                    for (const mod of modules) {
-                        try {
-                            ActionClass = req(mod);
-                            if (ActionClass) break;
-                        } catch (e) {}
-                    }
-                }
-
+                const ActionClass = getDeleteActionClass();
                 if (ActionClass) {
                     try {
                         const action = new ActionClass(hazardObj);
                         W.model.actionManager.add(action);
                         return true;
-                    } catch (e) {}
-                }
-
-                if (typeof W.model.permanentHazards.remove === "function") {
-                    try {
-                        W.model.permanentHazards.remove(hazardObj);
-                        return true;
-                    } catch (e) {}
+                    } catch (e) {
+                        console.error(`[${SCRIPT_NAME}] ActionClass execution failed:`, e);
+                    }
                 }
             }
         }
@@ -559,9 +584,18 @@
         try {
             const schoolZoneId = await addSchoolZone(rawGeometry);
 
-            await deleteVenueById(venueId);
+            const deleted = await deleteVenueById(venueId);
 
             console.log(`[${SCRIPT_NAME}] Converted School Area Place ${venueId} -> School Zone ${schoolZoneId}.`);
+
+            if (!deleted) {
+                alert(
+                    `${SCRIPT_NAME}\n\n` +
+                        `Created the new School Zone, but could not automatically delete the ` +
+                        `original School Area Place.\n\n` +
+                        `Please delete the old School Area Place manually.`
+                );
+            }
 
             setTimeout(() => selectPermanentHazard(schoolZoneId), 100);
         } catch (error) {
