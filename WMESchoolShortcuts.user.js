@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.7
+// @version     1.1.0-beta.8
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -103,17 +103,26 @@
     }
 
     function extractGeometry(feature) {
-        return feature?.geometry || feature?.attributes?.geometry || null;
+        if (!feature) return null;
+        if (typeof feature.getGeometry === "function") {
+            try {
+                const g = feature.getGeometry();
+                if (g) return g;
+            } catch (e) {}
+        }
+        return feature.geometry || feature.attributes?.geometry || feature.geom || null;
     }
 
     function extractNumericVertices(rawGeometry) {
         if (!rawGeometry) return [];
         let points = [];
 
+        const geomObj = rawGeometry.type === "Feature" ? rawGeometry.geometry : rawGeometry;
+
         // 1. Try getVertices() method
-        if (typeof rawGeometry.getVertices === "function") {
+        if (typeof geomObj.getVertices === "function") {
             try {
-                const vertices = rawGeometry.getVertices();
+                const vertices = geomObj.getVertices();
                 if (Array.isArray(vertices)) {
                     points = vertices.map((v) => ({
                         x: Number(v.x),
@@ -126,7 +135,7 @@
 
         // 2. Try components array (OpenLayers Polygon -> LinearRing -> Points)
         if (!points.length) {
-            const components = rawGeometry.components || rawGeometry.attributes?.components;
+            const components = geomObj.components || geomObj.attributes?.components;
             if (Array.isArray(components) && components.length > 0) {
                 const ring = components[0];
                 const ringPts = ring?.components || ring?.attributes?.components;
@@ -143,8 +152,8 @@
         }
 
         // 3. GeoJSON format fallback
-        if (!points.length && rawGeometry.type === "Polygon" && Array.isArray(rawGeometry.coordinates)) {
-            const ring = rawGeometry.coordinates[0];
+        if (!points.length && geomObj.type === "Polygon" && Array.isArray(geomObj.coordinates)) {
+            const ring = geomObj.coordinates[0];
             if (Array.isArray(ring)) {
                 points = ring.map((coord) => ({
                     x: Number(coord[0]),
@@ -176,6 +185,14 @@
         return points;
     }
 
+    function createGeoJSONPolygon(pts, includeZ = false) {
+        const coords = pts.map((p) => (includeZ ? [p.x, p.y, p.z] : [p.x, p.y]));
+        return {
+            type: "Polygon",
+            coordinates: [coords],
+        };
+    }
+
     function cleanOpenLayersObject(obj, visited = new WeakSet()) {
         if (!obj || typeof obj !== "object") return obj;
         if (visited.has(obj)) return obj;
@@ -200,48 +217,29 @@
             throw new Error("Invalid or empty polygon geometry.");
         }
 
-        let olPolygon = null;
-        if (typeof OpenLayers !== "undefined" && OpenLayers.Geometry?.Point && OpenLayers.Geometry?.LinearRing && OpenLayers.Geometry?.Polygon) {
-            const olPoints = pts.map((p) => {
-                const pt = new OpenLayers.Geometry.Point(p.x, p.y, p.z);
-                pt.z = p.z;
-                return pt;
-            });
-            const ring = new OpenLayers.Geometry.LinearRing(olPoints);
-            olPolygon = new OpenLayers.Geometry.Polygon([ring]);
-            cleanOpenLayersObject(olPolygon);
-        }
+        const geo2d = createGeoJSONPolygon(pts, false);
+        const geo3d = createGeoJSONPolygon(pts, true);
 
-        const geojsonPolygon = {
-            type: "Polygon",
-            coordinates: [pts.map((p) => [p.x, p.y, p.z])],
-        };
+        // 1. Try SDK DataModel with clean GeoJSON objects (No circular OpenLayers objects)
+        if (typeof sdk?.DataModel?.Venues?.addVenue === "function") {
+            const sdkOptions = [
+                { category: "SCHOOL", geometry: geo2d },
+                { category: "SCHOOL", geometry: geo3d },
+                { categories: ["SCHOOL"], geometry: geo2d },
+                { categories: ["SCHOOL"], geometry: geo3d },
+            ];
 
-        const plainComponentsPolygon = {
-            components: [
-                {
-                    components: pts.map((p) => ({ x: p.x, y: p.y, z: p.z })),
-                },
-            ],
-        };
-
-        const formatsToTry = [olPolygon, geojsonPolygon, plainComponentsPolygon, rawGeometry].filter(Boolean);
-
-        let lastError = null;
-        for (const geom of formatsToTry) {
-            try {
-                const venueId = sdk.DataModel.Venues.addVenue({
-                    category: "SCHOOL",
-                    geometry: geom,
-                });
-                if (venueId) return venueId;
-            } catch (err) {
-                lastError = err;
-                console.warn(`[${SCRIPT_NAME}] addVenue attempt failed with geometry format:`, err);
+            for (const opts of sdkOptions) {
+                try {
+                    const venueId = sdk.DataModel.Venues.addVenue(opts);
+                    if (venueId) return venueId;
+                } catch (err) {
+                    console.warn(`[${SCRIPT_NAME}] SDK addVenue attempt failed:`, err);
+                }
             }
         }
 
-        // Internal WME Action Fallback
+        // 2. Internal WME Action Fallback (Uses OpenLayers objects)
         const { W, Waze } = getWmeGlobals();
         const req = typeof require === "function" ? require : window.require;
 
@@ -257,6 +255,18 @@
             }
 
             if (AddVenueAction && VenueFeature) {
+                let olPolygon = null;
+                if (typeof OpenLayers !== "undefined" && OpenLayers.Geometry?.Point && OpenLayers.Geometry?.LinearRing && OpenLayers.Geometry?.Polygon) {
+                    const olPoints = pts.map((p) => {
+                        const pt = new OpenLayers.Geometry.Point(p.x, p.y, p.z);
+                        pt.z = p.z;
+                        return pt;
+                    });
+                    const ring = new OpenLayers.Geometry.LinearRing(olPoints);
+                    olPolygon = new OpenLayers.Geometry.Polygon([ring]);
+                    cleanOpenLayersObject(olPolygon);
+                }
+
                 const venue = new VenueFeature({
                     categories: ["SCHOOL"],
                     geometry: olPolygon || rawGeometry,
@@ -267,7 +277,7 @@
             }
         }
 
-        throw lastError || new Error("Failed to add a new venue.");
+        throw new Error("Failed to add a new School Area Place.");
     }
 
     async function addSchoolZone(rawGeometry) {
@@ -276,38 +286,22 @@
             throw new Error("Invalid or empty polygon geometry.");
         }
 
-        let olPolygon = null;
-        if (typeof OpenLayers !== "undefined" && OpenLayers.Geometry?.Point && OpenLayers.Geometry?.LinearRing && OpenLayers.Geometry?.Polygon) {
-            const olPoints = pts.map((p) => {
-                const pt = new OpenLayers.Geometry.Point(p.x, p.y, p.z);
-                pt.z = p.z;
-                return pt;
-            });
-            const ring = new OpenLayers.Geometry.LinearRing(olPoints);
-            olPolygon = new OpenLayers.Geometry.Polygon([ring]);
-            cleanOpenLayersObject(olPolygon);
-        }
+        const geo2d = createGeoJSONPolygon(pts, false);
+        const geo3d = createGeoJSONPolygon(pts, true);
 
-        const geojsonPolygon = {
-            type: "Polygon",
-            coordinates: [pts.map((p) => [p.x, p.y, p.z])],
-        };
-
-        const formatsToTry = [olPolygon, geojsonPolygon, rawGeometry].filter(Boolean);
-
-        // 1. Try SDK PermanentHazards
+        // 1. Try SDK PermanentHazards with clean GeoJSON objects
         if (typeof sdk?.DataModel?.PermanentHazards?.addSchoolZone === "function") {
-            for (const geom of formatsToTry) {
+            for (const geom of [geo2d, geo3d]) {
                 try {
                     const zoneId = await sdk.DataModel.PermanentHazards.addSchoolZone({ geometry: geom });
                     if (zoneId) return zoneId;
                 } catch (err) {
-                    console.warn(`[${SCRIPT_NAME}] addSchoolZone attempt failed with geometry format:`, err);
+                    console.warn(`[${SCRIPT_NAME}] SDK addSchoolZone attempt failed:`, err);
                 }
             }
         }
 
-        // 2. Internal WME Action Fallback
+        // 2. Internal WME Action Fallback (Uses OpenLayers objects)
         const { W, Waze } = getWmeGlobals();
         const req = typeof require === "function" ? require : window.require;
 
@@ -323,6 +317,18 @@
             }
 
             if (AddHazardAction && HazardFeature) {
+                let olPolygon = null;
+                if (typeof OpenLayers !== "undefined" && OpenLayers.Geometry?.Point && OpenLayers.Geometry?.LinearRing && OpenLayers.Geometry?.Polygon) {
+                    const olPoints = pts.map((p) => {
+                        const pt = new OpenLayers.Geometry.Point(p.x, p.y, p.z);
+                        pt.z = p.z;
+                        return pt;
+                    });
+                    const ring = new OpenLayers.Geometry.LinearRing(olPoints);
+                    olPolygon = new OpenLayers.Geometry.Polygon([ring]);
+                    cleanOpenLayersObject(olPolygon);
+                }
+
                 const hazard = new HazardFeature({
                     type: "SCHOOL_ZONE",
                     geometry: olPolygon || rawGeometry,
@@ -530,7 +536,7 @@
 
     /*
      * ---------------------------------------------------------
-     * Conversions
+     * Conversions (Explicitly called via UI buttons)
      * ---------------------------------------------------------
      */
 
@@ -595,17 +601,12 @@
 
     /*
      * ---------------------------------------------------------
-     * Create (draw) functions
+     * Create (draw) functions (Triggered via shortcuts or UI)
      * ---------------------------------------------------------
      */
 
     async function createSchoolZone() {
         if (!sdk) return console.error(`[${SCRIPT_NAME}] SDK is not available.`);
-
-        const existingVenue = getSelectedSchoolVenue();
-        if (existingVenue) {
-            return convertVenueToSchoolZone(existingVenue);
-        }
 
         try {
             cancelActiveDrawing();
@@ -627,11 +628,6 @@
 
     async function createSchoolAreaPlace() {
         if (!sdk) return console.error(`[${SCRIPT_NAME}] SDK is not available.`);
-
-        const existingHazard = getSelectedSchoolZoneHazard();
-        if (existingHazard) {
-            return convertHazardToSchoolVenue(existingHazard);
-        }
 
         try {
             cancelActiveDrawing();
@@ -694,14 +690,14 @@
     function registerKeyboardShortcuts() {
         const schoolPlace = registerShortcut({
             shortcutId: SHORTCUT_IDS.schoolPlace,
-            description: "Create/Convert School Area Place",
+            description: "Create School Area Place",
             shortcutKeys: DEFAULT_SHORTCUTS.schoolPlace,
             callback: createSchoolAreaPlace,
         });
 
         const schoolZone = registerShortcut({
             shortcutId: SHORTCUT_IDS.schoolZone,
-            description: "Create/Convert School Zone",
+            description: "Create School Zone",
             shortcutKeys: DEFAULT_SHORTCUTS.schoolZone,
             callback: createSchoolZone,
         });
