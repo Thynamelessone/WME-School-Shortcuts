@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.1
+// @version     1.1.0-beta.2
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -18,7 +18,7 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "New Feature: Convert Area Places to School Zones and vice versa";
+    const updateMessage = "Fix a MutationObserver feedback loop that could freeze/crash WME, and loosen School Zone detection";
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
     const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
@@ -158,8 +158,39 @@
                 W?.model?.permanentHazards?.objects?.[hazardId] ||
                 W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
 
-            if (internal && (internal.attributes?.type === "SCHOOL_ZONE" || internal.type === "SCHOOL_ZONE")) {
-                return internal;
+            if (internal) {
+                // ⚠️ We don't have a verified field name/value for "this hazard
+                // is a school zone" on this WME version. Try a few plausible
+                // spots. Only actively HIDE the button when a field clearly
+                // says this is some other kind of hazard (e.g. a speed
+                // camera) — otherwise show it, since a wrong-but-visible
+                // button is more useful to debug than a silently missing one.
+                const typeCandidates = [
+                    internal?.attributes?.type,
+                    internal?.type,
+                    internal?.attributes?.category,
+                    internal?.category,
+                ].filter(Boolean);
+
+                const looksNonSchool = typeCandidates.some(
+                    (t) => /camera|speed/i.test(String(t)) && !/school/i.test(String(t))
+                );
+
+                if (looksNonSchool) {
+                    console.debug(
+                        `[${SCRIPT_NAME}] Selected permanent hazard looks like a non-school hazard, skipping.`,
+                        typeCandidates
+                    );
+                    return null;
+                }
+
+                // Only return it if we actually have geometry to work with —
+                // an object without geometry is useless for conversion.
+                if (extractGeometry(internal)) {
+                    return internal;
+                }
+
+                console.debug(`[${SCRIPT_NAME}] Internal hazard object found but had no readable geometry.`, internal);
             }
         } catch (error) {
             console.debug(`[${SCRIPT_NAME}] Internal model fallback failed.`, error);
@@ -456,61 +487,118 @@
         return btn;
     }
 
-    function injectVenueConvertButton() {
-        const venue = getSelectedSchoolVenue();
-        if (!venue) return;
-
+    function findVenuePanel() {
         // ⚠️ Selector guess based on the original script's comment.
         // Adjust if WME's venue editor panel structure has changed.
-        const panel =
+        return (
             document.querySelector("#venue-edit-general") ||
             document.querySelector(".venue-edit-general") ||
-            document.querySelector("wz-panel[data-testid='venue-feature-editor'] .feature-editor-panel-content");
+            document.querySelector("wz-panel[data-testid='venue-feature-editor'] .feature-editor-panel-content")
+        );
+    }
 
-        if (!panel) return;
+    function findHazardPanel() {
+        // ⚠️ Selector guess based on the original script's comment.
+        // Adjust if WME's permanent hazard editor panel structure has changed.
+        return (
+            document.querySelector(".permanent-hazard-feature-editor") ||
+            document.querySelector("wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content")
+        );
+    }
+
+    // Returns true if it actually changed the DOM, false if it left things alone.
+    function injectVenueConvertButton() {
+        const venue = getSelectedSchoolVenue();
+        const existing = document.getElementById(CONVERT_BUTTON_IDS.toSchoolZone);
+
+        if (!venue) {
+            if (existing) {
+                existing.remove();
+                return true;
+            }
+            return false;
+        }
+
+        const venueId = String(venue.id ?? venue.venueId ?? "");
+        const panel = findVenuePanel();
+        if (!panel) return false;
+
+        // Already correctly placed for this exact venue — do nothing,
+        // so we don't generate a mutation that re-triggers the observer.
+        if (existing && existing.dataset.featureId === venueId && existing.parentElement === panel) {
+            return false;
+        }
+
+        if (existing) existing.remove();
 
         const button = makeConvertButton({
             id: CONVERT_BUTTON_IDS.toSchoolZone,
             label: "Convert to School Zone",
             onClick: () => convertVenueToSchoolZone(venue),
         });
+        button.dataset.featureId = venueId;
 
         panel.insertBefore(button, panel.firstChild);
+        return true;
     }
 
     function injectHazardConvertButton() {
         const hazard = getSelectedSchoolZoneHazard();
-        if (!hazard) return;
+        const existing = document.getElementById(CONVERT_BUTTON_IDS.toAreaPlace);
 
-        // ⚠️ Selector guess based on the original script's comment.
-        // Adjust if WME's permanent hazard editor panel structure has changed.
-        const panel =
-            document.querySelector(".permanent-hazard-feature-editor") ||
-            document.querySelector("wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content");
+        if (!hazard) {
+            if (existing) {
+                existing.remove();
+                return true;
+            }
+            return false;
+        }
 
-        if (!panel) return;
+        const hazardId = String(hazard.id ?? hazard.permanentHazardId ?? "");
+        const panel = findHazardPanel();
+        if (!panel) return false;
+
+        if (existing && existing.dataset.featureId === hazardId && existing.parentElement === panel) {
+            return false;
+        }
+
+        if (existing) existing.remove();
 
         const button = makeConvertButton({
             id: CONVERT_BUTTON_IDS.toAreaPlace,
             label: "Convert to School Area Place",
             onClick: () => convertHazardToSchoolVenue(hazard),
         });
+        button.dataset.featureId = hazardId;
 
         panel.insertBefore(button, panel.firstChild);
-    }
-
-    function removeStaleConvertButtons() {
-        const venue = getSelectedSchoolVenue();
-        const hazard = getSelectedSchoolZoneHazard();
-
-        if (!venue) document.getElementById(CONVERT_BUTTON_IDS.toSchoolZone)?.remove();
-        if (!hazard) document.getElementById(CONVERT_BUTTON_IDS.toAreaPlace)?.remove();
+        return true;
     }
 
     function refreshConvertButtons() {
-        removeStaleConvertButtons();
-        injectVenueConvertButton();
-        injectHazardConvertButton();
+        // Disconnect while we mutate so our own inserts/removes don't
+        // re-trigger the MutationObserver (this was causing an infinite
+        // loop / tab freeze on selection or venue creation).
+        observer?.disconnect();
+
+        try {
+            injectVenueConvertButton();
+            injectHazardConvertButton();
+        } finally {
+            const sidebar = document.getElementById("sidebar") || document.body;
+            observer?.observe(sidebar, { childList: true, subtree: true });
+        }
+    }
+
+    let refreshScheduled = false;
+
+    function scheduleRefresh() {
+        if (refreshScheduled) return;
+        refreshScheduled = true;
+        setTimeout(() => {
+            refreshScheduled = false;
+            refreshConvertButtons();
+        }, 200);
     }
 
     function watchFeatureEditor() {
@@ -518,16 +606,19 @@
         try {
             sdk.Events.on({
                 eventName: "wme-selection-changed",
-                eventHandler: () => setTimeout(refreshConvertButtons, 150),
+                eventHandler: () => scheduleRefresh(),
             });
         } catch (error) {
             console.debug(`[${SCRIPT_NAME}] wme-selection-changed event unavailable.`, error);
         }
 
-        // ...and also fall back to a DOM observer, since the editor panel
-        // is rendered asynchronously and selector-based hooks can be timing-sensitive.
+        // ...and also fall back to a debounced DOM observer, since the editor
+        // panel is rendered asynchronously and selector-based hooks can be
+        // timing-sensitive. Debouncing (via scheduleRefresh) plus disconnecting
+        // during our own DOM writes (in refreshConvertButtons) prevents the
+        // observer from reacting to mutations we caused ourselves.
         observer = new MutationObserver(() => {
-            refreshConvertButtons();
+            scheduleRefresh();
         });
 
         const sidebar = document.getElementById("sidebar") || document.body;
