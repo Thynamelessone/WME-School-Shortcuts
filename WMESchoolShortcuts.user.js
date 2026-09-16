@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.8
+// @version     1.1.0-beta.9
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -35,7 +35,6 @@
 
     const CONVERT_BUTTON_IDS = {
         toSchoolZone: `${SCRIPT_ID}-convert-to-zone`,
-        toAreaPlace: `${SCRIPT_ID}-convert-to-place`,
     };
 
     let sdk = null;
@@ -220,7 +219,7 @@
         const geo2d = createGeoJSONPolygon(pts, false);
         const geo3d = createGeoJSONPolygon(pts, true);
 
-        // 1. Try SDK DataModel with clean GeoJSON objects (No circular OpenLayers objects)
+        // 1. Try SDK DataModel with clean GeoJSON objects
         if (typeof sdk?.DataModel?.Venues?.addVenue === "function") {
             const sdkOptions = [
                 { category: "SCHOOL", geometry: geo2d },
@@ -379,56 +378,6 @@
         }
     }
 
-    function getSelectedSchoolZoneHazard() {
-        const selection = getCurrentSelection();
-        if (!selection || selection.objectType !== "permanentHazard" || !selection.ids?.length) {
-            return null;
-        }
-
-        const hazardId = selection.ids[0];
-
-        try {
-            if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
-                const hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: Number(hazardId) });
-                if (hazard) return hazard;
-            }
-        } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById() unavailable, trying fallback.`, error);
-        }
-
-        try {
-            const { W } = getWmeGlobals();
-            const internal =
-                W?.model?.permanentHazards?.objects?.[hazardId] ||
-                W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
-
-            if (internal) {
-                const typeCandidates = [
-                    internal?.attributes?.type,
-                    internal?.type,
-                    internal?.attributes?.category,
-                    internal?.category,
-                ].filter(Boolean);
-
-                const looksNonSchool = typeCandidates.some(
-                    (t) => /camera|speed/i.test(String(t)) && !/school/i.test(String(t))
-                );
-
-                if (looksNonSchool) {
-                    return null;
-                }
-
-                if (extractGeometry(internal)) {
-                    return internal;
-                }
-            }
-        } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] Internal model fallback failed.`, error);
-        }
-
-        return null;
-    }
-
     /*
      * ---------------------------------------------------------
      * Deletion helpers
@@ -451,92 +400,9 @@
         return false;
     }
 
-    async function deletePermanentHazardById(hazardId) {
-        const numId = Number(hazardId);
-        const strId = String(hazardId);
-
-        // Attempt 1: sdk.Editing.deleteFeature / deleteObject
-        if (typeof sdk?.Editing?.deleteFeature === "function") {
-            try {
-                await sdk.Editing.deleteFeature({ id: numId, objectType: "permanentHazard" });
-                return true;
-            } catch (e) {}
-        }
-
-        // Attempt 2: SDK DataModel methods
-        if (typeof sdk?.DataModel?.PermanentHazards?.deletePermanentHazard === "function") {
-            try {
-                await sdk.DataModel.PermanentHazards.deletePermanentHazard({ permanentHazardId: numId });
-                return true;
-            } catch (e) {}
-        }
-        if (typeof sdk?.DataModel?.PermanentHazards?.deleteSchoolZone === "function") {
-            try {
-                await sdk.DataModel.PermanentHazards.deleteSchoolZone({ permanentHazardId: numId });
-                return true;
-            } catch (e) {}
-        }
-
-        // Attempt 3: WME Action Manager via internal action classes
-        const { W, Waze } = getWmeGlobals();
-        const req = typeof require === "function" ? require : window.require;
-
-        if (W && W.model?.actionManager) {
-            const hazardObj =
-                W.model.permanentHazards?.objects?.[numId] ||
-                W.model.permanentHazards?.objects?.[strId] ||
-                W.model.permanentHazards?.getObjectById?.(numId);
-
-            if (hazardObj) {
-                let ActionClass =
-                    Waze?.Action?.DeletePermanentHazard ||
-                    W?.Action?.DeletePermanentHazard ||
-                    Waze?.Action?.DeleteFeature ||
-                    W?.Action?.DeleteFeature ||
-                    Waze?.Action?.DeleteObject ||
-                    W?.Action?.DeleteObject;
-
-                if (!ActionClass && typeof req === "function") {
-                    const modules = [
-                        "Waze/Action/DeletePermanentHazard",
-                        "Waze/Action/DeleteFeature",
-                        "Waze/Action/DeleteObject",
-                    ];
-                    for (const mod of modules) {
-                        try {
-                            ActionClass = req(mod);
-                            if (ActionClass) break;
-                        } catch (e) {}
-                    }
-                }
-
-                if (ActionClass) {
-                    try {
-                        const action = new ActionClass(hazardObj);
-                        W.model.actionManager.add(action);
-                        return true;
-                    } catch (e) {
-                        console.warn(`[${SCRIPT_NAME}] ActionClass deletion failed:`, e);
-                    }
-                }
-
-                // Direct model removal fallback
-                if (typeof W.model.permanentHazards.remove === "function") {
-                    try {
-                        W.model.permanentHazards.remove(hazardObj);
-                        return true;
-                    } catch (e) {}
-                }
-            }
-        }
-
-        console.error(`[${SCRIPT_NAME}] Every deletion method failed for hazard ${hazardId}.`);
-        return false;
-    }
-
     /*
      * ---------------------------------------------------------
-     * Conversions (Explicitly called via UI buttons)
+     * Conversions
      * ---------------------------------------------------------
      */
 
@@ -567,41 +433,9 @@
         }
     }
 
-    async function convertHazardToSchoolVenue(hazard) {
-        const rawGeometry = extractGeometry(hazard);
-        if (!rawGeometry) {
-            alert(`${SCRIPT_NAME}\n\nCould not read the geometry of the selected School Zone.`);
-            return;
-        }
-
-        const hazardId = hazard.id ?? hazard.permanentHazardId;
-
-        try {
-            const venueId = await addSchoolVenue(rawGeometry);
-
-            const deleted = await deletePermanentHazardById(hazardId);
-
-            console.log(`[${SCRIPT_NAME}] Converted School Zone ${hazardId} -> School Area Place ${venueId}.`);
-
-            if (!deleted) {
-                alert(
-                    `${SCRIPT_NAME}\n\n` +
-                        `Created the new School Area Place, but could not automatically delete the ` +
-                        `original School Zone (no working deletion method found on this WME SDK version).\n\n` +
-                        `Please delete the old School Zone manually.`
-                );
-            }
-
-            setTimeout(() => selectVenue(venueId), 100);
-        } catch (error) {
-            console.error(`[${SCRIPT_NAME}] Failed to convert School Zone to School Area Place.`, error);
-            alert(`${SCRIPT_NAME}\n\nFailed to convert to School Area Place:\n\n${error?.message || error}`);
-        }
-    }
-
     /*
      * ---------------------------------------------------------
-     * Create (draw) functions (Triggered via shortcuts or UI)
+     * Create (draw) functions
      * ---------------------------------------------------------
      */
 
@@ -746,13 +580,6 @@
         );
     }
 
-    function findHazardPanel() {
-        return (
-            document.querySelector(".permanent-hazard-feature-editor") ||
-            document.querySelector("wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content")
-        );
-    }
-
     function injectVenueConvertButton() {
         const venue = getSelectedSchoolVenue();
         const existing = document.getElementById(CONVERT_BUTTON_IDS.toSchoolZone);
@@ -786,45 +613,11 @@
         return true;
     }
 
-    function injectHazardConvertButton() {
-        const hazard = getSelectedSchoolZoneHazard();
-        const existing = document.getElementById(CONVERT_BUTTON_IDS.toAreaPlace);
-
-        if (!hazard) {
-            if (existing) {
-                existing.remove();
-                return true;
-            }
-            return false;
-        }
-
-        const hazardId = String(hazard.id ?? hazard.permanentHazardId ?? "");
-        const panel = findHazardPanel();
-        if (!panel) return false;
-
-        if (existing && existing.dataset.featureId === hazardId && existing.parentElement === panel) {
-            return false;
-        }
-
-        if (existing) existing.remove();
-
-        const button = makeConvertButton({
-            id: CONVERT_BUTTON_IDS.toAreaPlace,
-            label: "Convert to School Area Place",
-            onClick: () => convertHazardToSchoolVenue(hazard),
-        });
-        button.dataset.featureId = hazardId;
-
-        panel.insertBefore(button, panel.firstChild);
-        return true;
-    }
-
     function refreshConvertButtons() {
         observer?.disconnect();
 
         try {
             injectVenueConvertButton();
-            injectHazardConvertButton();
         } finally {
             const sidebar = document.getElementById("sidebar") || document.body;
             observer?.observe(sidebar, { childList: true, subtree: true });
