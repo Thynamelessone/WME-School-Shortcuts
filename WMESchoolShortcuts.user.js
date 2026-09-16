@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.12
+// @version     1.1.0-beta.13
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -54,18 +54,22 @@
         const req = typeof require === "function" ? require : window.require;
 
         let ActionClass =
+            Waze?.Action?.DeletePermanentHazard ||
+            W?.Action?.DeletePermanentHazard ||
             Waze?.Action?.DeleteObject ||
             W?.Action?.DeleteObject ||
             Waze?.Action?.DeleteFeature ||
             W?.Action?.DeleteFeature ||
-            Waze?.Action?.DeletePermanentHazard ||
-            W?.Action?.DeletePermanentHazard;
+            Waze?.Action?.DeleteVenue ||
+            W?.Action?.DeleteVenue;
 
         if (!ActionClass && typeof req === "function") {
             const modules = [
+                "Waze/Action/DeletePermanentHazard",
                 "Waze/Action/DeleteObject",
                 "Waze/Action/DeleteFeature",
-                "Waze/Action/DeletePermanentHazard",
+                "Waze/Action/DeleteVenue",
+                "Waze/Action/RemovePermanentHazard"
             ];
             for (const mod of modules) {
                 try {
@@ -473,7 +477,7 @@
 
     /*
      * ---------------------------------------------------------
-     * Deletion helpers
+     * Deletion helpers (Enhanced with multi-API & Failsafes)
      * ---------------------------------------------------------
      */
 
@@ -481,6 +485,7 @@
         const strId = String(venueId);
         const numId = Number(venueId);
 
+        // 1. Try SDK Venues & Editing API Methods
         if (typeof sdk?.DataModel?.Venues?.deleteVenue === "function") {
             try {
                 await sdk.DataModel.Venues.deleteVenue({ venueId: strId });
@@ -494,6 +499,7 @@
             } catch (e) {}
         }
 
+        // 2. ActionManager fallback
         const { W } = getWmeGlobals();
         if (W && W.model?.actionManager && W.model?.venues) {
             const venueObj =
@@ -511,6 +517,39 @@
                     } catch (e) {}
                 }
             }
+        }
+
+        // 3. Automated UI / Keypress Failsafe
+        try {
+            selectVenue(venueId);
+            await new Promise((r) => setTimeout(r, 50));
+
+            if (W?.selectionManager?.deleteSelectedFeatures) {
+                W.selectionManager.deleteSelectedFeatures();
+                return true;
+            }
+            if (W?.controller?.deleteSelectedFeatures) {
+                W.controller.deleteSelectedFeatures();
+                return true;
+            }
+
+            const trashButton = document.querySelector(".delete-button, button.delete, [data-testid='delete-button'], .feature-editor .delete");
+            if (trashButton && typeof trashButton.click === "function") {
+                trashButton.click();
+                return true;
+            }
+
+            const deleteEvent = new KeyboardEvent("keydown", {
+                key: "Delete",
+                keyCode: 46,
+                which: 46,
+                bubbles: true,
+                cancelable: true,
+            });
+            (document.activeElement || document.body).dispatchEvent(deleteEvent);
+            return true;
+        } catch (e) {
+            console.error(`[${SCRIPT_NAME}] Failsafe UI deletion failed for venue ${venueId}:`, e);
         }
 
         return false;
@@ -533,14 +572,25 @@
                 return true;
             } catch (e) {}
         }
+        if (typeof sdk?.DataModel?.PermanentHazards?.deleteHazard === "function") {
+            try {
+                await sdk.DataModel.PermanentHazards.deleteHazard({ permanentHazardId: numId });
+                return true;
+            } catch (e) {}
+        }
         if (typeof sdk?.Editing?.deleteFeature === "function") {
             try {
                 await sdk.Editing.deleteFeature({ id: numId, objectType: "permanentHazard" });
                 return true;
-            } catch (e) {}
+            } catch (e) {
+                try {
+                    await sdk.Editing.deleteFeature({ id: strId, objectType: "permanentHazard" });
+                    return true;
+                } catch (err) {}
+            }
         }
 
-        // 2. ActionManager fallback (Ensures changes persist to WME save queue)
+        // 2. ActionManager fallback
         const { W } = getWmeGlobals();
         if (W && W.model?.actionManager && W.model?.permanentHazards) {
             const hazardObj =
@@ -560,6 +610,39 @@
                     }
                 }
             }
+        }
+
+        // 3. Automated UI / Keypress Failsafe (Select feature -> Trigger Delete)
+        try {
+            selectPermanentHazard(hazardId);
+            await new Promise((r) => setTimeout(r, 50));
+
+            if (W?.selectionManager?.deleteSelectedFeatures) {
+                W.selectionManager.deleteSelectedFeatures();
+                return true;
+            }
+            if (W?.controller?.deleteSelectedFeatures) {
+                W.controller.deleteSelectedFeatures();
+                return true;
+            }
+
+            const trashButton = document.querySelector(".delete-button, button.delete, [data-testid='delete-button'], .feature-editor .delete");
+            if (trashButton && typeof trashButton.click === "function") {
+                trashButton.click();
+                return true;
+            }
+
+            const deleteEvent = new KeyboardEvent("keydown", {
+                key: "Delete",
+                keyCode: 46,
+                which: 46,
+                bubbles: true,
+                cancelable: true,
+            });
+            (document.activeElement || document.body).dispatchEvent(deleteEvent);
+            return true;
+        } catch (e) {
+            console.error(`[${SCRIPT_NAME}] Failsafe UI deletion failed for hazard ${hazardId}:`, e);
         }
 
         console.error(`[${SCRIPT_NAME}] Deletion failed for hazard ${hazardId}.`);
@@ -628,7 +711,7 @@
                 alert(
                     `${SCRIPT_NAME}\n\n` +
                         `Created the new School Area Place, but could not automatically delete the ` +
-                        `original School Zone (no working deletion method found on this WME SDK version).\n\n` +
+                        `original School Zone.\n\n` +
                         `Please delete the old School Zone manually.`
                 );
             }
