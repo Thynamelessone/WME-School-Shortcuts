@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.10
+// @version     1.1.1-beta.11
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -888,7 +888,6 @@
             "wz-panel[data-testid='venue-feature-editor']",
             ".venue-feature-editor",
             "#venue-feature-editor",
-            "#sidebar .feature-editor",
             "#edit-panel"
         ];
         for (const selector of selectors) {
@@ -903,7 +902,6 @@
             "wz-panel[data-testid='permanent-hazard-feature-editor']",
             ".permanent-hazard-feature-editor",
             "#permanent-hazard-feature-editor",
-            "#sidebar .feature-editor",
             "#edit-panel"
         ];
         for (const selector of selectors) {
@@ -914,19 +912,65 @@
     }
 
     function insertButtonBelowHeader(panel, button) {
-        // Locate the tab bar or form content wrapper inside the feature editor panel
-        const tabContainer = panel.querySelector(
-            "wz-navigation-tabs, wz-tab-bar, .nav-tabs, wz-form, .feature-editor-panel-content, #venue-edit-general, #hazard-edit-general"
+        // 1. Target the panel header element (contains Name & ID)
+        const headerEl = panel.querySelector(
+            ".feature-editor-header, wz-header, [class*='header'], wz-card-header, .header"
         );
 
-        if (tabContainer && tabContainer.parentNode) {
-            // Insert directly above the tab bar (below the Name / ID header)
-            tabContainer.parentNode.insertBefore(button, tabContainer);
-        } else if (panel.firstChild) {
+        if (headerEl && headerEl.parentNode) {
+            // Place button directly after the header wrapper
+            if (headerEl.nextSibling) {
+                headerEl.parentNode.insertBefore(button, headerEl.nextSibling);
+                return;
+            } else {
+                headerEl.parentNode.appendChild(button);
+                return;
+            }
+        }
+
+        // 2. Fallback: Target the tab bar directly and place above it
+        const tabsEl = panel.querySelector(
+            "wz-navigation-tabs, wz-tab-bar, .nav-tabs, wz-tabs"
+        );
+
+        if (tabsEl && tabsEl.parentNode) {
+            tabsEl.parentNode.insertBefore(button, tabsEl);
+            return;
+        }
+
+        // 3. Last fallback
+        if (panel.firstChild) {
             panel.insertBefore(button, panel.firstChild);
         } else {
             panel.appendChild(button);
         }
+    }
+
+    function makeConvertButton({ id, label, onClick }) {
+        const existing = document.getElementById(id);
+        if (existing) existing.remove();
+
+        const btn = document.createElement("button");
+        btn.id = id;
+        btn.type = "button";
+        btn.textContent = label;
+        btn.className = "waze-btn waze-btn-white";
+        btn.style.cssText = "margin: 8px 16px; width: calc(100% - 32px); display: block; box-sizing: border-box;";
+
+        btn.addEventListener("click", async (event) => {
+            event.preventDefault();
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = "Converting…";
+            try {
+                await onClick();
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        });
+
+        return btn;
     }
 
     function injectVenueConvertButton() {
