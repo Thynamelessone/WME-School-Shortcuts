@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.1
+// @version     1.1.1-beta.2
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -441,12 +441,12 @@
 
         if (!venue) return null;
 
-        // Read categories/type strictly
+        // Check categories array, single category property, or venue attributes
         const rawCategories = venue.categories || venue.attributes?.categories || (venue.category ? [venue.category] : []);
         const categoriesArray = Array.isArray(rawCategories) ? rawCategories : [rawCategories];
 
         const isSchool = categoriesArray.some((c) => {
-            const val = String(c?.id || c || "").toUpperCase();
+            const val = String(c?.id || c?.name || c || "").toUpperCase();
             return val === "SCHOOL" || val.includes("SCHOOL");
         });
 
@@ -483,17 +483,23 @@
 
         if (!hazard) return null;
 
-        // Check all possible hazard type/category attributes
-        const hazardType = String(
-            hazard?.attributes?.type ||
-            hazard?.type ||
-            hazard?.attributes?.category ||
-            hazard?.category ||
-            ""
-        ).toUpperCase();
+        // Inspect all potential WME SDK and W.model type properties
+        const candidates = [
+            hazard?.permanentHazardType,
+            hazard?.hazardType,
+            hazard?.type,
+            hazard?.attributes?.permanentHazardType,
+            hazard?.attributes?.hazardType,
+            hazard?.attributes?.type,
+            hazard?.attributes?.category,
+            hazard?.category,
+        ];
 
-        // Strict validation: Must explicitly be a SCHOOL_ZONE
-        const isSchoolZone = hazardType === "SCHOOL_ZONE" || hazardType.includes("SCHOOL");
+        const isSchoolZone = candidates.some((typeVal) => {
+            if (!typeVal) return false;
+            const val = String(typeVal).toUpperCase();
+            return val === "SCHOOL_ZONE" || val.includes("SCHOOL");
+        });
 
         if (!isSchoolZone) {
             return null;
