@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.6
+// @version     1.1.1-beta.7
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -939,58 +939,22 @@
     }
 
     function findHazardPanel() {
+        // Priority order: inner general tab container -> panel content -> panel body -> outer container
         const selectors = [
+            "#hazard-edit-general",
+            ".permanent-hazard-feature-editor #hazard-edit-general",
             ".permanent-hazard-feature-editor .feature-editor-panel-content",
             "wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content",
-            "wz-panel[data-testid='permanent-hazard-feature-editor']",
+            ".permanent-hazard-feature-editor wz-form",
             ".permanent-hazard-feature-editor",
-            "#permanent-hazard-feature-editor",
-            "#hazard-edit-general",
-            "#edit-panel .tab-content",
-            "#sidebar .feature-editor",
-            "#edit-panel"
+            "wz-panel[data-testid='permanent-hazard-feature-editor']",
+            "#permanent-hazard-feature-editor"
         ];
         for (const selector of selectors) {
             const el = document.querySelector(selector);
             if (el) return el;
         }
         return null;
-    }
-
-    function injectVenueConvertButton() {
-        const venue = getSelectedSchoolVenue();
-        const existing = document.getElementById(CONVERT_BUTTON_IDS.toSchoolZone);
-
-        if (!venue) {
-            if (existing) existing.remove();
-            return false;
-        }
-
-        const venueId = String(venue.id ?? venue.venueId ?? venue.attributes?.id ?? "");
-        const panel = findVenuePanel();
-
-        if (!panel) return false;
-
-        if (existing) {
-            if (existing.dataset.featureId === venueId && existing.isConnected && existing.parentElement === panel) {
-                return true;
-            }
-            existing.remove();
-        }
-
-        const button = makeConvertButton({
-            id: CONVERT_BUTTON_IDS.toSchoolZone,
-            label: "Convert to School Zone",
-            onClick: () => convertVenueToSchoolZone(venue),
-        });
-        button.dataset.featureId = venueId;
-
-        if (panel.firstChild) {
-            panel.insertBefore(button, panel.firstChild);
-        } else {
-            panel.appendChild(button);
-        }
-        return true;
     }
 
     function injectHazardConvertButton() {
@@ -1008,7 +972,7 @@
         if (!panel) return false;
 
         if (existing) {
-            if (existing.dataset.featureId === hazardId && existing.isConnected) {
+            if (existing.dataset.featureId === hazardId && existing.isConnected && existing.parentElement === panel) {
                 return true;
             }
             existing.remove();
@@ -1021,6 +985,7 @@
         });
         button.dataset.featureId = hazardId;
 
+        // Insert inside the content body below the header/tabs
         if (panel.firstChild) {
             panel.insertBefore(button, panel.firstChild);
         } else {
