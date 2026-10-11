@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0-beta.14
+// @version     1.1.1-beta.1
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -18,7 +18,7 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "New Feature: Convert Area Places to School Zones and vice versa";
+    const updateMessage = "Bug Fix: Stop convert to school area place showing on other permanant hazards.";
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
     const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
@@ -441,12 +441,13 @@
 
         if (!venue) return null;
 
+        // Read categories/type strictly
         const rawCategories = venue.categories || venue.attributes?.categories || (venue.category ? [venue.category] : []);
         const categoriesArray = Array.isArray(rawCategories) ? rawCategories : [rawCategories];
 
         const isSchool = categoriesArray.some((c) => {
             const val = String(c?.id || c || "").toUpperCase();
-            return val.includes("SCHOOL");
+            return val === "SCHOOL" || val.includes("SCHOOL");
         });
 
         if (!isSchool) return null;
@@ -482,18 +483,19 @@
 
         if (!hazard) return null;
 
-        const typeCandidates = [
-            hazard?.attributes?.type,
-            hazard?.type,
-            hazard?.attributes?.category,
-            hazard?.category,
-        ].filter(Boolean);
+        // Check all possible hazard type/category attributes
+        const hazardType = String(
+            hazard?.attributes?.type ||
+            hazard?.type ||
+            hazard?.attributes?.category ||
+            hazard?.category ||
+            ""
+        ).toUpperCase();
 
-        const looksNonSchool = typeCandidates.some(
-            (t) => /camera|speed/i.test(String(t)) && !/school/i.test(String(t))
-        );
+        // Strict validation: Must explicitly be a SCHOOL_ZONE
+        const isSchoolZone = hazardType === "SCHOOL_ZONE" || hazardType.includes("SCHOOL");
 
-        if (looksNonSchool) {
+        if (!isSchoolZone) {
             return null;
         }
 
