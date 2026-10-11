@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.8
+// @version     1.1.1-beta.9
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -904,14 +904,15 @@
     }
 
     function findHazardPanel() {
+        // 1. Look for tab-content inside hazard-edit-general (matches place tab layout)
         const selectors = [
+            "#hazard-edit-general .tab-content",
             "#hazard-edit-general",
-            ".permanent-hazard-feature-editor #hazard-edit-general",
+            ".permanent-hazard-feature-editor .tab-content",
             ".permanent-hazard-feature-editor .feature-editor-panel-content",
             "wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content",
             ".permanent-hazard-feature-editor wz-form",
             ".permanent-hazard-feature-editor",
-            "wz-panel[data-testid='permanent-hazard-feature-editor']",
             "#permanent-hazard-feature-editor"
         ];
         for (const selector of selectors) {
