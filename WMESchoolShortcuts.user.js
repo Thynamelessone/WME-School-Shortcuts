@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.0
+// @version     1.1.1
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -18,7 +18,10 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "New Feature: Convert Area Places to School Zones and vice versa";
+    const updateMessage = [
+        "New Feature: Added support for WME Studio format",
+        "Bug Fixes: Stop convert to school area place showing on other permanent hazards."
+    ].join("<br><br>");
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
     const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
@@ -83,6 +86,92 @@
 
     /*
      * ---------------------------------------------------------
+     * WME Studio Support & Style Injection
+     * ---------------------------------------------------------
+     */
+
+    function injectStudioStyles() {
+        if (document.getElementById(`${SCRIPT_ID}-styles`)) return;
+
+        const style = document.createElement("style");
+        style.id = `${SCRIPT_ID}-styles`;
+        style.textContent = `
+            .wme-school-convert-btn {
+                /* Map Studio variables with single-source fallbacks */
+                --btn-bg: var(--wme-studio-input, var(--wme-studio-surface, var(--background_default, #ffffff)));
+                --btn-hover-bg: var(--wme-studio-hover, #e8eaed);
+                --btn-text: var(--wme-studio-text, var(--content_default, #202124));
+                --btn-border: var(--wme-studio-border, var(--hairline, #dadce0));
+                --btn-radius: var(--wme-studio-button-radius, var(--wme-studio-radius, 8px));
+                --btn-font: var(--ws-font, inherit);
+
+                margin: 8px 16px !important;
+                width: calc(100% - 32px) !important;
+                display: block !important;
+                box-sizing: border-box !important;
+                background-color: var(--btn-bg) !important;
+                background: var(--btn-bg) !important;
+                color: var(--btn-text) !important;
+                border: 1px solid var(--btn-border) !important;
+                border-radius: var(--btn-radius) !important;
+                font-family: var(--btn-font) !important;
+                padding: 8px 16px !important;
+                font-size: 13px !important;
+                font-weight: 500 !important;
+                cursor: pointer !important;
+                box-shadow: none !important;
+                text-align: center !important;
+                transition: background-color 0.15s ease, border-color 0.15s ease !important;
+            }
+
+            .wme-school-convert-btn:hover {
+                background-color: var(--btn-hover-bg) !important;
+                background: var(--btn-hover-bg) !important;
+            }
+
+            .wme-school-convert-btn:disabled {
+                opacity: 0.6 !important;
+                cursor: not-allowed !important;
+            }
+
+            /* Dark and Black theme overrides when Studio is active */
+            html[data-wme-studio-theme="dark"] .wme-school-convert-btn,
+            html[data-wme-studio-theme="black"] .wme-school-convert-btn {
+                color-scheme: dark;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function setupStudioObserver() {
+        const root = document.documentElement;
+
+        function getStudioState() {
+            return {
+                on: root.dataset.wmeStudio === "on",
+                theme: root.dataset.wmeStudioTheme || "light",
+                compact: root.dataset.wmeStudioCompact === "on"
+            };
+        }
+
+        const observer = new MutationObserver(() => {
+            scheduleRefresh();
+        });
+
+        observer.observe(root, {
+            attributes: true,
+            attributeFilter: [
+                "data-wme-studio",
+                "data-wme-studio-theme",
+                "data-wme-studio-compact"
+            ]
+        });
+
+        return getStudioState();
+    }
+
+    /*
+     * ---------------------------------------------------------
      * Helpers & Geometry Sanitizer
      * ---------------------------------------------------------
      */
@@ -135,16 +224,12 @@
         }
     }
 
-    /**
-     * Extracts live, updated geometry from active WME map selection.
-     */
     function extractGeometry(feature) {
         if (!feature) return null;
 
         const { W } = getWmeGlobals();
         const targetId = String(feature.id ?? feature.venueId ?? feature.permanentHazardId ?? feature.attributes?.id ?? "");
 
-        // 1. Live modified OpenLayers feature geometry from W.selectionManager
         try {
             const selFeatures = W?.selectionManager?.getSelectedFeatures?.() || [];
             for (const sf of selFeatures) {
@@ -159,7 +244,6 @@
             }
         } catch (e) {}
 
-        // 2. Direct getGeometry() call on feature object
         if (typeof feature.getGeometry === "function") {
             try {
                 const g = feature.getGeometry();
@@ -167,7 +251,6 @@
             } catch (e) {}
         }
 
-        // 3. Fallback to model/attribute properties
         return feature.geometry || feature.attributes?.geometry || feature.geom || null;
     }
 
@@ -177,7 +260,6 @@
 
         const geomObj = rawGeometry.type === "Feature" ? rawGeometry.geometry : rawGeometry;
 
-        // 1. Try getVertices() method
         if (typeof geomObj.getVertices === "function") {
             try {
                 const vertices = geomObj.getVertices();
@@ -191,7 +273,6 @@
             } catch (e) {}
         }
 
-        // 2. Try components array (OpenLayers Polygon -> LinearRing -> Points)
         if (!points.length) {
             const components = geomObj.components || geomObj.attributes?.components;
             if (Array.isArray(components) && components.length > 0) {
@@ -209,7 +290,6 @@
             }
         }
 
-        // 3. GeoJSON format fallback
         if (!points.length && geomObj.type === "Polygon" && Array.isArray(geomObj.coordinates)) {
             const ring = geomObj.coordinates[0];
             if (Array.isArray(ring)) {
@@ -221,19 +301,15 @@
             }
         }
 
-        // Filter out invalid numbers for x & y
         points = points.filter((p) => !isNaN(p.x) && !isNaN(p.y));
-
         if (points.length < 3) return [];
 
-        // Ensure all z properties are numeric (0 instead of NaN or undefined)
         points = points.map((p) => ({
             x: p.x,
             y: p.y,
             z: isNaN(p.z) ? 0 : p.z,
         }));
 
-        // Ensure closed ring
         const first = points[0];
         const last = points[points.length - 1];
         if (first.x !== last.x || first.y !== last.y) {
@@ -278,7 +354,6 @@
         const geo2d = createGeoJSONPolygon(pts, false);
         const geo3d = createGeoJSONPolygon(pts, true);
 
-        // 1. Try SDK DataModel with clean GeoJSON objects
         if (typeof sdk?.DataModel?.Venues?.addVenue === "function") {
             const sdkOptions = [
                 { category: "SCHOOL", geometry: geo2d },
@@ -297,7 +372,6 @@
             }
         }
 
-        // 2. Internal WME Action Fallback (Uses OpenLayers objects)
         const { W, Waze } = getWmeGlobals();
         const req = typeof require === "function" ? require : window.require;
 
@@ -347,7 +421,6 @@
         const geo2d = createGeoJSONPolygon(pts, false);
         const geo3d = createGeoJSONPolygon(pts, true);
 
-        // 1. Try SDK PermanentHazards with clean GeoJSON objects
         if (typeof sdk?.DataModel?.PermanentHazards?.addSchoolZone === "function") {
             for (const geom of [geo2d, geo3d]) {
                 try {
@@ -359,7 +432,6 @@
             }
         }
 
-        // 2. Internal WME Action Fallback (Uses OpenLayers objects)
         const { W, Waze } = getWmeGlobals();
         const req = typeof require === "function" ? require : window.require;
 
@@ -429,7 +501,7 @@
                 venue = sdk.DataModel.Venues.getById({ venueId });
             }
         } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] Venues.getById failed, using fallback.`, error);
+            console.debug(`[${SCRIPT_NAME}] Venues.getById failed.`, error);
         }
 
         if (!venue) {
@@ -445,13 +517,11 @@
         const categoriesArray = Array.isArray(rawCategories) ? rawCategories : [rawCategories];
 
         const isSchool = categoriesArray.some((c) => {
-            const val = String(c?.id || c || "").toUpperCase();
-            return val.includes("SCHOOL");
+            const val = String(c?.id || c?.name || c || "").toUpperCase();
+            return val === "SCHOOL" || val.includes("SCHOOL");
         });
 
-        if (!isSchool) return null;
-
-        return venue;
+        return isSchool ? venue : null;
     }
 
     function getSelectedSchoolZoneHazard() {
@@ -460,44 +530,58 @@
             return null;
         }
 
-        const hazardId = selection.ids[0];
+        const rawId = selection.ids[0];
+        const numId = Number(rawId);
+        const strId = String(rawId);
         let hazard = null;
 
         try {
             if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
-                hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: Number(hazardId) });
+                hazard =
+                    sdk.DataModel.PermanentHazards.getById({ permanentHazardId: numId }) ||
+                    sdk.DataModel.PermanentHazards.getById({ permanentHazardId: strId });
             }
-        } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById failed, using fallback.`, error);
+        } catch (e) {
+            console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById failed.`, e);
         }
 
-        if (!hazard) {
-            const { W } = getWmeGlobals();
+        if (!hazard && typeof sdk?.DataModel?.PermanentHazards?.getAll === "function") {
             try {
-                hazard =
-                    W?.model?.permanentHazards?.objects?.[hazardId] ||
-                    W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
+                const allHazards = sdk.DataModel.PermanentHazards.getAll() || [];
+                hazard = allHazards.find(
+                    (h) => Number(h.id ?? h.permanentHazardId ?? h.attributes?.id) === numId
+                ) || null;
             } catch (e) {}
         }
 
         if (!hazard) return null;
 
-        const typeCandidates = [
-            hazard?.attributes?.type,
-            hazard?.type,
-            hazard?.attributes?.category,
-            hazard?.category,
-        ].filter(Boolean);
+        const hazardType = String(
+            hazard.permanentHazardType ||
+            hazard.hazardType ||
+            hazard.type ||
+            hazard.attributes?.permanentHazardType ||
+            hazard.attributes?.hazardType ||
+            hazard.attributes?.type ||
+            ""
+        ).toUpperCase();
 
-        const looksNonSchool = typeCandidates.some(
-            (t) => /camera|speed/i.test(String(t)) && !/school/i.test(String(t))
-        );
-
-        if (looksNonSchool) {
+        if (hazardType.includes("CAMERA") || hazardType.includes("SPEED")) {
             return null;
         }
 
-        return hazard;
+        const isSchoolZone = hazardType === "SCHOOL_ZONE" || hazardType.includes("SCHOOL");
+        if (isSchoolZone) return hazard;
+
+        try {
+            const fullObjStr = JSON.stringify(hazard).toUpperCase();
+            if (fullObjStr.includes("CAMERA")) return null;
+            if (fullObjStr.includes("SCHOOL_ZONE") || fullObjStr.includes("SCHOOL")) {
+                return hazard;
+            }
+        } catch (e) {}
+
+        return null;
     }
 
     /*
@@ -510,7 +594,6 @@
         const strId = String(venueId);
         const numId = Number(venueId);
 
-        // 1. Try SDK Venues & Editing API Methods
         if (typeof sdk?.DataModel?.Venues?.deleteVenue === "function") {
             try {
                 await sdk.DataModel.Venues.deleteVenue({ venueId: strId });
@@ -524,7 +607,6 @@
             } catch (e) {}
         }
 
-        // 2. ActionManager fallback
         const { W } = getWmeGlobals();
         if (W && W.model?.actionManager && W.model?.venues) {
             const venueObj =
@@ -544,7 +626,6 @@
             }
         }
 
-        // 3. Automated UI / Keypress Failsafe
         try {
             selectVenue(venueId);
             await new Promise((r) => setTimeout(r, 50));
@@ -584,7 +665,6 @@
         const numId = Number(hazardId);
         const strId = String(hazardId);
 
-        // 1. Try SDK PermanentHazards / Editing methods
         if (typeof sdk?.DataModel?.PermanentHazards?.deleteSchoolZone === "function") {
             try {
                 await sdk.DataModel.PermanentHazards.deleteSchoolZone({ permanentHazardId: numId });
@@ -615,7 +695,6 @@
             }
         }
 
-        // 2. ActionManager fallback
         const { W } = getWmeGlobals();
         if (W && W.model?.actionManager && W.model?.permanentHazards) {
             const hazardObj =
@@ -630,14 +709,11 @@
                         const action = new ActionClass(hazardObj);
                         W.model.actionManager.add(action);
                         return true;
-                    } catch (e) {
-                        console.error(`[${SCRIPT_NAME}] ActionClass execution failed:`, e);
-                    }
+                    } catch (e) {}
                 }
             }
         }
 
-        // 3. Automated UI / Keypress Failsafe (Select feature -> Trigger Delete)
         try {
             selectPermanentHazard(hazardId);
             await new Promise((r) => setTimeout(r, 50));
@@ -670,7 +746,6 @@
             console.error(`[${SCRIPT_NAME}] Failsafe UI deletion failed for hazard ${hazardId}:`, e);
         }
 
-        console.error(`[${SCRIPT_NAME}] Deletion failed for hazard ${hazardId}.`);
         return false;
     }
 
@@ -697,7 +772,6 @@
 
         try {
             const schoolZoneId = await addSchoolZone(rawGeometry);
-
             const deleted = await deleteVenueById(venueId);
 
             console.log(`[${SCRIPT_NAME}] Converted School Area Place ${venueId} -> School Zone ${schoolZoneId}.`);
@@ -739,7 +813,6 @@
 
         try {
             const venueId = await addSchoolVenue(rawGeometry);
-
             const deleted = await deletePermanentHazardById(hazardId);
 
             console.log(`[${SCRIPT_NAME}] Converted School Zone ${hazardId} -> School Area Place ${venueId}.`);
@@ -880,8 +953,7 @@
         btn.id = id;
         btn.type = "button";
         btn.textContent = label;
-        btn.className = "waze-btn waze-btn-white";
-        btn.style.cssText = "margin: 8px 0; width: 100%; display: block;";
+        btn.className = "wme-school-convert-btn";
 
         btn.addEventListener("click", async (event) => {
             event.preventDefault();
@@ -901,15 +973,9 @@
 
     function findVenuePanel() {
         const selectors = [
-            "#venue-edit-general",
-            ".venue-edit-general",
-            "wz-panel[data-testid='venue-feature-editor'] .feature-editor-panel-content",
             "wz-panel[data-testid='venue-feature-editor']",
             ".venue-feature-editor",
             "#venue-feature-editor",
-            "[data-testid='venue-feature-editor']",
-            "#edit-panel .tab-content",
-            "#sidebar .feature-editor",
             "#edit-panel"
         ];
         for (const selector of selectors) {
@@ -921,14 +987,9 @@
 
     function findHazardPanel() {
         const selectors = [
-            ".permanent-hazard-feature-editor .feature-editor-panel-content",
-            "wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content",
             "wz-panel[data-testid='permanent-hazard-feature-editor']",
             ".permanent-hazard-feature-editor",
             "#permanent-hazard-feature-editor",
-            "#hazard-edit-general",
-            "#edit-panel .tab-content",
-            "#sidebar .feature-editor",
             "#edit-panel"
         ];
         for (const selector of selectors) {
@@ -936,6 +997,37 @@
             if (el) return el;
         }
         return null;
+    }
+
+    function insertButtonBelowHeader(panel, button) {
+        const headerEl = panel.querySelector(
+            ".feature-editor-header, wz-header, [class*='header'], wz-card-header, .header"
+        );
+
+        if (headerEl && headerEl.parentNode) {
+            if (headerEl.nextSibling) {
+                headerEl.parentNode.insertBefore(button, headerEl.nextSibling);
+                return;
+            } else {
+                headerEl.parentNode.appendChild(button);
+                return;
+            }
+        }
+
+        const tabsEl = panel.querySelector(
+            "wz-navigation-tabs, wz-tab-bar, .nav-tabs, wz-tabs"
+        );
+
+        if (tabsEl && tabsEl.parentNode) {
+            tabsEl.parentNode.insertBefore(button, tabsEl);
+            return;
+        }
+
+        if (panel.firstChild) {
+            panel.insertBefore(button, panel.firstChild);
+        } else {
+            panel.appendChild(button);
+        }
     }
 
     function injectVenueConvertButton() {
@@ -953,7 +1045,7 @@
         if (!panel) return false;
 
         if (existing) {
-            if (existing.dataset.featureId === venueId && existing.isConnected && existing.parentElement === panel) {
+            if (existing.dataset.featureId === venueId && existing.isConnected) {
                 return true;
             }
             existing.remove();
@@ -966,11 +1058,7 @@
         });
         button.dataset.featureId = venueId;
 
-        if (panel.firstChild) {
-            panel.insertBefore(button, panel.firstChild);
-        } else {
-            panel.appendChild(button);
-        }
+        insertButtonBelowHeader(panel, button);
         return true;
     }
 
@@ -989,7 +1077,7 @@
         if (!panel) return false;
 
         if (existing) {
-            if (existing.dataset.featureId === hazardId && existing.isConnected && existing.parentElement === panel) {
+            if (existing.dataset.featureId === hazardId && existing.isConnected) {
                 return true;
             }
             existing.remove();
@@ -1002,11 +1090,7 @@
         });
         button.dataset.featureId = hazardId;
 
-        if (panel.firstChild) {
-            panel.insertBefore(button, panel.firstChild);
-        } else {
-            panel.appendChild(button);
-        }
+        insertButtonBelowHeader(panel, button);
         return true;
     }
 
@@ -1016,12 +1100,20 @@
         try {
             const venueInjected = injectVenueConvertButton();
             if (!venueInjected && getSelectedSchoolVenue()) {
-                setTimeout(injectVenueConvertButton, 350);
+                setTimeout(injectVenueConvertButton, 250);
+                setTimeout(injectVenueConvertButton, 600);
             }
 
             const hazardInjected = injectHazardConvertButton();
             if (!hazardInjected && getSelectedSchoolZoneHazard()) {
-                setTimeout(injectHazardConvertButton, 350);
+                let attempts = 0;
+                const retryInterval = setInterval(() => {
+                    attempts++;
+                    const injected = injectHazardConvertButton();
+                    if (injected || attempts >= 10) {
+                        clearInterval(retryInterval);
+                    }
+                }, 100);
             }
         } finally {
             const sidebar = document.getElementById("sidebar") || document.body;
@@ -1067,6 +1159,9 @@
     async function initialise() {
         try {
             console.log(`[${SCRIPT_NAME}] Initialising...`);
+
+            injectStudioStyles();
+            setupStudioObserver();
 
             if (typeof getWmeSdk !== "function") throw new Error("WME SDK is unavailable.");
 
