@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.12
+// @version     1.1.1-beta.13
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -19,8 +19,8 @@
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
     const updateMessage = [
-        "Bug Fixes: Stop convert to school area place showing on other permanent hazards.",
-        "New Feature: Added support for WME Studio format"
+        "New Feature: Added support for WME Studio format",
+        "Bug Fixes: Stop convert to school area place showing on other permanent hazards."
     ].join("<br><br>");
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
@@ -84,16 +84,91 @@
         return ActionClass;
     }
 
-    function getStudioColor(name, fallback) {
-        if (typeof window === "undefined") return fallback;
-        const value = getComputedStyle(document.documentElement)
-            .getPropertyValue(name)
-            .trim();
-        return value || fallback;
+    /*
+     * ---------------------------------------------------------
+     * WME Studio Support & Style Injection
+     * ---------------------------------------------------------
+     */
+
+    function injectStudioStyles() {
+        if (document.getElementById(`${SCRIPT_ID}-styles`)) return;
+
+        const style = document.createElement("style");
+        style.id = `${SCRIPT_ID}-styles`;
+        style.textContent = `
+            .wme-school-convert-btn {
+                /* Map Studio variables with single-source fallbacks */
+                --btn-bg: var(--wme-studio-input, var(--wme-studio-surface, var(--background_default, #ffffff)));
+                --btn-hover-bg: var(--wme-studio-hover, #e8eaed);
+                --btn-text: var(--wme-studio-text, var(--content_default, #202124));
+                --btn-border: var(--wme-studio-border, var(--hairline, #dadce0));
+                --btn-radius: var(--wme-studio-button-radius, var(--wme-studio-radius, 8px));
+                --btn-font: var(--ws-font, inherit);
+
+                margin: 8px 16px !important;
+                width: calc(100% - 32px) !important;
+                display: block !important;
+                box-sizing: border-box !important;
+                background-color: var(--btn-bg) !important;
+                background: var(--btn-bg) !important;
+                color: var(--btn-text) !important;
+                border: 1px solid var(--btn-border) !important;
+                border-radius: var(--btn-radius) !important;
+                font-family: var(--btn-font) !important;
+                padding: 8px 16px !important;
+                font-size: 13px !important;
+                font-weight: 500 !important;
+                cursor: pointer !important;
+                box-shadow: none !important;
+                text-align: center !important;
+                transition: background-color 0.15s ease, border-color 0.15s ease !important;
+            }
+
+            .wme-school-convert-btn:hover {
+                background-color: var(--btn-hover-bg) !important;
+                background: var(--btn-hover-bg) !important;
+            }
+
+            .wme-school-convert-btn:disabled {
+                opacity: 0.6 !important;
+                cursor: not-allowed !important;
+            }
+
+            /* Dark and Black theme overrides when Studio is active */
+            html[data-wme-studio-theme="dark"] .wme-school-convert-btn,
+            html[data-wme-studio-theme="black"] .wme-school-convert-btn {
+                color-scheme: dark;
+            }
+        `;
+        document.head.appendChild(style);
     }
 
-    // Example usage:
-    // const accentColor = getStudioColor('--wme-studio-accent', '#0099ff');
+    function setupStudioObserver() {
+        const root = document.documentElement;
+
+        function getStudioState() {
+            return {
+                on: root.dataset.wmeStudio === "on",
+                theme: root.dataset.wmeStudioTheme || "light",
+                compact: root.dataset.wmeStudioCompact === "on"
+            };
+        }
+
+        const observer = new MutationObserver(() => {
+            scheduleRefresh();
+        });
+
+        observer.observe(root, {
+            attributes: true,
+            attributeFilter: [
+                "data-wme-studio",
+                "data-wme-studio-theme",
+                "data-wme-studio-compact"
+            ]
+        });
+
+        return getStudioState();
+    }
 
     /*
      * ---------------------------------------------------------
@@ -878,40 +953,7 @@
         btn.id = id;
         btn.type = "button";
         btn.textContent = label;
-        btn.className = "waze-btn waze-btn-white wme-school-shortcuts-btn";
-
-        // Set inline CSS custom properties with single-source Studio fallbacks
-        btn.style.cssText = `
-            --wme-btn-bg: var(--wme-studio-surface, var(--wme-studio-input, var(--background_default, #ffffff)));
-            --wme-btn-hover-bg: var(--wme-studio-hover, #f1f3f4);
-            --wme-btn-text: var(--wme-studio-text, var(--content_default, #202124));
-            --wme-btn-border: var(--wme-studio-border, var(--hairline, #dadce0));
-            --wme-btn-radius: var(--wme-studio-button-radius, var(--wme-studio-radius, 8px));
-            --wme-btn-font: var(--ws-font, inherit);
-
-            margin: 8px 16px;
-            width: calc(100% - 32px);
-            display: block;
-            box-sizing: border-box;
-            background-color: var(--wme-btn-bg);
-            color: var(--wme-btn-text);
-            border: 1px solid var(--wme-btn-border);
-            border-radius: var(--wme-btn-radius);
-            font-family: var(--wme-btn-font);
-            padding: 8px 16px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background-color 0.15s ease, border-color 0.15s ease;
-        `;
-
-        // Hover effect respecting Studio theme variables
-        btn.addEventListener("mouseenter", () => {
-            btn.style.backgroundColor = "var(--wme-btn-hover-bg)";
-        });
-
-        btn.addEventListener("mouseleave", () => {
-            btn.style.backgroundColor = "var(--wme-btn-bg)";
-        });
+        btn.className = "wme-school-convert-btn";
 
         btn.addEventListener("click", async (event) => {
             event.preventDefault();
@@ -958,13 +1000,11 @@
     }
 
     function insertButtonBelowHeader(panel, button) {
-        // 1. Target the panel header element (contains Name & ID)
         const headerEl = panel.querySelector(
             ".feature-editor-header, wz-header, [class*='header'], wz-card-header, .header"
         );
 
         if (headerEl && headerEl.parentNode) {
-            // Place button directly after the header wrapper
             if (headerEl.nextSibling) {
                 headerEl.parentNode.insertBefore(button, headerEl.nextSibling);
                 return;
@@ -974,7 +1014,6 @@
             }
         }
 
-        // 2. Fallback: Target the tab bar directly and place above it
         const tabsEl = panel.querySelector(
             "wz-navigation-tabs, wz-tab-bar, .nav-tabs, wz-tabs"
         );
@@ -984,39 +1023,11 @@
             return;
         }
 
-        // 3. Last fallback
         if (panel.firstChild) {
             panel.insertBefore(button, panel.firstChild);
         } else {
             panel.appendChild(button);
         }
-    }
-
-    function makeConvertButton({ id, label, onClick }) {
-        const existing = document.getElementById(id);
-        if (existing) existing.remove();
-
-        const btn = document.createElement("button");
-        btn.id = id;
-        btn.type = "button";
-        btn.textContent = label;
-        btn.className = "waze-btn waze-btn-white";
-        btn.style.cssText = "margin: 8px 16px; width: calc(100% - 32px); display: block; box-sizing: border-box;";
-
-        btn.addEventListener("click", async (event) => {
-            event.preventDefault();
-            btn.disabled = true;
-            const originalText = btn.textContent;
-            btn.textContent = "Converting…";
-            try {
-                await onClick();
-            } finally {
-                btn.disabled = false;
-                btn.textContent = originalText;
-            }
-        });
-
-        return btn;
     }
 
     function injectVenueConvertButton() {
@@ -1148,6 +1159,9 @@
     async function initialise() {
         try {
             console.log(`[${SCRIPT_NAME}] Initialising...`);
+
+            injectStudioStyles();
+            setupStudioObserver();
 
             if (typeof getWmeSdk !== "function") throw new Error("WME SDK is unavailable.");
 
