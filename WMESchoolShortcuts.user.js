@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.4
+// @version     1.1.1-beta.5
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -415,7 +415,51 @@
         }
     }
 
+    function getSelectedSchoolZoneHazard() {
+        // 1. Get selection using official SDK
+        const selection = getCurrentSelection();
+        if (!selection || selection.objectType !== "permanentHazard" || !selection.ids?.length) {
+            return null;
+        }
+
+        const hazardId = Number(selection.ids[0]);
+        let hazard = null;
+
+        // 2. Fetch object strictly via SDK DataModel API
+        try {
+            if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
+                hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: hazardId });
+            }
+        } catch (error) {
+            console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById failed.`, error);
+            return null;
+        }
+
+        if (!hazard) return null;
+
+        // 3. Read type directly from SDK hazard model properties
+        const hazardType = String(
+            hazard.permanentHazardType ||
+            hazard.type ||
+            hazard.attributes?.permanentHazardType ||
+            hazard.attributes?.type ||
+            ""
+        ).toUpperCase();
+
+        // 4. Strict SDK validation: Must be SCHOOL_ZONE and NOT CAMERA/SPEED
+        if (hazardType.includes("CAMERA") || hazardType.includes("SPEED")) {
+            return null;
+        }
+
+        if (hazardType === "SCHOOL_ZONE" || hazardType.includes("SCHOOL")) {
+            return hazard;
+        }
+
+        return null;
+    }
+
     function getSelectedSchoolVenue() {
+        // 1. Get selection using official SDK
         const selection = getCurrentSelection();
         if (!selection || selection.objectType !== "venue" || !selection.ids?.length) {
             return null;
@@ -424,24 +468,19 @@
         const venueId = String(selection.ids[0]);
         let venue = null;
 
+        // 2. Fetch object strictly via SDK DataModel API
         try {
             if (typeof sdk?.DataModel?.Venues?.getById === "function") {
                 venue = sdk.DataModel.Venues.getById({ venueId });
             }
         } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] Venues.getById failed, using fallback.`, error);
-        }
-
-        if (!venue) {
-            const { W } = getWmeGlobals();
-            try {
-                venue = W?.model?.venues?.objects?.[venueId] || W?.model?.venues?.getObjectById?.(venueId);
-            } catch (e) {}
+            console.debug(`[${SCRIPT_NAME}] Venues.getById failed.`, error);
+            return null;
         }
 
         if (!venue) return null;
 
-        // Check categories array, single category property, or venue attributes
+        // 3. Read categories strictly from SDK venue model
         const rawCategories = venue.categories || venue.attributes?.categories || (venue.category ? [venue.category] : []);
         const categoriesArray = Array.isArray(rawCategories) ? rawCategories : [rawCategories];
 
@@ -450,82 +489,7 @@
             return val === "SCHOOL" || val.includes("SCHOOL");
         });
 
-        if (!isSchool) return null;
-
-        return venue;
-    }
-
-    function getSelectedSchoolZoneHazard() {
-        const selection = getCurrentSelection();
-        if (!selection || selection.objectType !== "permanentHazard" || !selection.ids?.length) {
-            return null;
-        }
-
-        const hazardId = String(selection.ids[0]);
-        const { W } = getWmeGlobals();
-        let hazard = null;
-
-        // 1. Check live OpenLayers selected feature (most accurate during clicks)
-        try {
-            const selectedFeatures = W?.selectionManager?.getSelectedFeatures?.() || [];
-            for (const sf of selectedFeatures) {
-                const model = sf?.model || sf;
-                const sfId = String(model?.id ?? model?.attributes?.id ?? "");
-                if (sfId === hazardId) {
-                    hazard = model;
-                    break;
-                }
-            }
-        } catch (e) {}
-
-        // 2. Fallback to SDK DataModel
-        if (!hazard) {
-            try {
-                if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
-                    hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: Number(hazardId) });
-                }
-            } catch (e) {}
-        }
-
-        // 3. Fallback to W.model
-        if (!hazard) {
-            try {
-                hazard = W?.model?.permanentHazards?.objects?.[hazardId] || W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
-            } catch (e) {}
-        }
-
-        // Inspect attributes
-        const rawType = String(
-            hazard?.attributes?.type ||
-            hazard?.attributes?.hazardType ||
-            hazard?.attributes?.permanentHazardType ||
-            hazard?.type ||
-            hazard?.hazardType ||
-            hazard?.permanentHazardType ||
-            ""
-        ).toUpperCase();
-
-        // Exclude cameras / non-school hazards strictly
-        if (rawType.includes("CAMERA") || rawType.includes("SPEED")) {
-            return null;
-        }
-
-        // Validate School Zone
-        const isSchool = rawType === "SCHOOL_ZONE" || rawType.includes("SCHOOL");
-
-        // Failsafe: check stringified attributes if type is nested
-        if (!isSchool && hazard) {
-            try {
-                const str = JSON.stringify(hazard.attributes || hazard).toUpperCase();
-                if (str.includes("CAMERA")) return null;
-                if (str.includes("SCHOOL_ZONE") || str.includes("SCHOOL")) {
-                    return hazard;
-                }
-            } catch (e) {}
-            return null;
-        }
-
-        return isSchool ? hazard : null;
+        return isSchool ? venue : null;
     }
 
     /*
