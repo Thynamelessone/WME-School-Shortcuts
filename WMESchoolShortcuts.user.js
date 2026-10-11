@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.11
+// @version     1.1.1-beta.12
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -18,7 +18,10 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "New Feature: Convert Area Places to School Zones and vice versa";
+    const updateMessage = [
+        "Bug Fixes: Stop convert to school area place showing on other permanent hazards.",
+        "New Feature: Added support for WME Studio format"
+    ].join("<br><br>");
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
     const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
@@ -80,6 +83,17 @@
         }
         return ActionClass;
     }
+
+    function getStudioColor(name, fallback) {
+        if (typeof window === "undefined") return fallback;
+        const value = getComputedStyle(document.documentElement)
+            .getPropertyValue(name)
+            .trim();
+        return value || fallback;
+    }
+
+    // Example usage:
+    // const accentColor = getStudioColor('--wme-studio-accent', '#0099ff');
 
     /*
      * ---------------------------------------------------------
@@ -864,8 +878,40 @@
         btn.id = id;
         btn.type = "button";
         btn.textContent = label;
-        btn.className = "waze-btn waze-btn-white";
-        btn.style.cssText = "margin: 8px 0; width: 100%; display: block;";
+        btn.className = "waze-btn waze-btn-white wme-school-shortcuts-btn";
+
+        // Set inline CSS custom properties with single-source Studio fallbacks
+        btn.style.cssText = `
+            --wme-btn-bg: var(--wme-studio-surface, var(--wme-studio-input, var(--background_default, #ffffff)));
+            --wme-btn-hover-bg: var(--wme-studio-hover, #f1f3f4);
+            --wme-btn-text: var(--wme-studio-text, var(--content_default, #202124));
+            --wme-btn-border: var(--wme-studio-border, var(--hairline, #dadce0));
+            --wme-btn-radius: var(--wme-studio-button-radius, var(--wme-studio-radius, 8px));
+            --wme-btn-font: var(--ws-font, inherit);
+
+            margin: 8px 16px;
+            width: calc(100% - 32px);
+            display: block;
+            box-sizing: border-box;
+            background-color: var(--wme-btn-bg);
+            color: var(--wme-btn-text);
+            border: 1px solid var(--wme-btn-border);
+            border-radius: var(--wme-btn-radius);
+            font-family: var(--wme-btn-font);
+            padding: 8px 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.15s ease, border-color 0.15s ease;
+        `;
+
+        // Hover effect respecting Studio theme variables
+        btn.addEventListener("mouseenter", () => {
+            btn.style.backgroundColor = "var(--wme-btn-hover-bg)";
+        });
+
+        btn.addEventListener("mouseleave", () => {
+            btn.style.backgroundColor = "var(--wme-btn-bg)";
+        });
 
         btn.addEventListener("click", async (event) => {
             event.preventDefault();
