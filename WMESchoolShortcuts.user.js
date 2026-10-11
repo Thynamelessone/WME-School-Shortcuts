@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.3
+// @version     1.1.1-beta.4
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -461,61 +461,71 @@
             return null;
         }
 
-        const hazardId = selection.ids[0];
+        const hazardId = String(selection.ids[0]);
+        const { W } = getWmeGlobals();
         let hazard = null;
 
+        // 1. Check live OpenLayers selected feature (most accurate during clicks)
         try {
-            if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
-                hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: Number(hazardId) });
+            const selectedFeatures = W?.selectionManager?.getSelectedFeatures?.() || [];
+            for (const sf of selectedFeatures) {
+                const model = sf?.model || sf;
+                const sfId = String(model?.id ?? model?.attributes?.id ?? "");
+                if (sfId === hazardId) {
+                    hazard = model;
+                    break;
+                }
             }
-        } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById failed, using fallback.`, error);
-        }
+        } catch (e) {}
 
+        // 2. Fallback to SDK DataModel
         if (!hazard) {
-            const { W } = getWmeGlobals();
             try {
-                hazard =
-                    W?.model?.permanentHazards?.objects?.[hazardId] ||
-                    W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
+                if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
+                    hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: Number(hazardId) });
+                }
             } catch (e) {}
         }
 
-        // 1. Check all object property values (stringified to catch nested objects/enums)
-        if (hazard) {
-            const allValues = JSON.stringify(hazard).toUpperCase();
-            
-            // If it explicitly contains camera or speed camera identifiers, exclude it
-            if (allValues.includes('"CAMERA"') || allValues.includes("SPEED_CAMERA")) {
-                return null;
-            }
-
-            if (allValues.includes("SCHOOL_ZONE") || allValues.includes("SCHOOL")) {
-                return hazard;
-            }
+        // 3. Fallback to W.model
+        if (!hazard) {
+            try {
+                hazard = W?.model?.permanentHazards?.objects?.[hazardId] || W?.model?.permanentHazards?.getObjectById?.(Number(hazardId));
+            } catch (e) {}
         }
 
-        // 2. Check current selection metadata from SDK/WME
-        const selectionStr = JSON.stringify(selection).toUpperCase();
-        if (selectionStr.includes("SCHOOL")) {
-            return hazard || { id: hazardId };
+        // Inspect attributes
+        const rawType = String(
+            hazard?.attributes?.type ||
+            hazard?.attributes?.hazardType ||
+            hazard?.attributes?.permanentHazardType ||
+            hazard?.type ||
+            hazard?.hazardType ||
+            hazard?.permanentHazardType ||
+            ""
+        ).toUpperCase();
+
+        // Exclude cameras / non-school hazards strictly
+        if (rawType.includes("CAMERA") || rawType.includes("SPEED")) {
+            return null;
         }
 
-        // 3. UI DOM Fallback: Check if the open sidebar editor specifically displays "School Zone" text or icons
-        const hazardPanel = document.querySelector(
-            "wz-panel[data-testid='permanent-hazard-feature-editor'], .permanent-hazard-feature-editor, #permanent-hazard-feature-editor"
-        );
+        // Validate School Zone
+        const isSchool = rawType === "SCHOOL_ZONE" || rawType.includes("SCHOOL");
 
-        if (hazardPanel) {
-            const panelText = hazardPanel.textContent?.toUpperCase() || "";
-            const isCameraPanel = panelText.includes("CAMERA") || document.querySelector(".icon-camera, [data-testid='camera-icon']");
-
-            if (!isCameraPanel && (panelText.includes("SCHOOL ZONE") || panelText.includes("SCHOOL"))) {
-                return hazard || { id: hazardId };
-            }
+        // Failsafe: check stringified attributes if type is nested
+        if (!isSchool && hazard) {
+            try {
+                const str = JSON.stringify(hazard.attributes || hazard).toUpperCase();
+                if (str.includes("CAMERA")) return null;
+                if (str.includes("SCHOOL_ZONE") || str.includes("SCHOOL")) {
+                    return hazard;
+                }
+            } catch (e) {}
+            return null;
         }
 
-        return null;
+        return isSchool ? hazard : null;
     }
 
     /*
@@ -1034,12 +1044,21 @@
         try {
             const venueInjected = injectVenueConvertButton();
             if (!venueInjected && getSelectedSchoolVenue()) {
-                setTimeout(injectVenueConvertButton, 350);
+                setTimeout(injectVenueConvertButton, 250);
+                setTimeout(injectVenueConvertButton, 600);
             }
 
             const hazardInjected = injectHazardConvertButton();
             if (!hazardInjected && getSelectedSchoolZoneHazard()) {
-                setTimeout(injectHazardConvertButton, 350);
+                // Panel rendering delayed: retry up to 1 second
+                let attempts = 0;
+                const retryInterval = setInterval(() => {
+                    attempts++;
+                    const injected = injectHazardConvertButton();
+                    if (injected || attempts >= 10) {
+                        clearInterval(retryInterval);
+                    }
+                }, 100);
             }
         } finally {
             const sidebar = document.getElementById("sidebar") || document.body;
