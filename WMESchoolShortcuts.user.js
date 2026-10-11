@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.2
+// @version     1.1.1-beta.3
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -481,31 +481,41 @@
             } catch (e) {}
         }
 
-        if (!hazard) return null;
+        // 1. Check all object property values (stringified to catch nested objects/enums)
+        if (hazard) {
+            const allValues = JSON.stringify(hazard).toUpperCase();
+            
+            // If it explicitly contains camera or speed camera identifiers, exclude it
+            if (allValues.includes('"CAMERA"') || allValues.includes("SPEED_CAMERA")) {
+                return null;
+            }
 
-        // Inspect all potential WME SDK and W.model type properties
-        const candidates = [
-            hazard?.permanentHazardType,
-            hazard?.hazardType,
-            hazard?.type,
-            hazard?.attributes?.permanentHazardType,
-            hazard?.attributes?.hazardType,
-            hazard?.attributes?.type,
-            hazard?.attributes?.category,
-            hazard?.category,
-        ];
-
-        const isSchoolZone = candidates.some((typeVal) => {
-            if (!typeVal) return false;
-            const val = String(typeVal).toUpperCase();
-            return val === "SCHOOL_ZONE" || val.includes("SCHOOL");
-        });
-
-        if (!isSchoolZone) {
-            return null;
+            if (allValues.includes("SCHOOL_ZONE") || allValues.includes("SCHOOL")) {
+                return hazard;
+            }
         }
 
-        return hazard;
+        // 2. Check current selection metadata from SDK/WME
+        const selectionStr = JSON.stringify(selection).toUpperCase();
+        if (selectionStr.includes("SCHOOL")) {
+            return hazard || { id: hazardId };
+        }
+
+        // 3. UI DOM Fallback: Check if the open sidebar editor specifically displays "School Zone" text or icons
+        const hazardPanel = document.querySelector(
+            "wz-panel[data-testid='permanent-hazard-feature-editor'], .permanent-hazard-feature-editor, #permanent-hazard-feature-editor"
+        );
+
+        if (hazardPanel) {
+            const panelText = hazardPanel.textContent?.toUpperCase() || "";
+            const isCameraPanel = panelText.includes("CAMERA") || document.querySelector(".icon-camera, [data-testid='camera-icon']");
+
+            if (!isCameraPanel && (panelText.includes("SCHOOL ZONE") || panelText.includes("SCHOOL"))) {
+                return hazard || { id: hazardId };
+            }
+        }
+
+        return null;
     }
 
     /*
