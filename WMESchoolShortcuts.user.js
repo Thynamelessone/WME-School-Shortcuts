@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.9
+// @version     1.1.1-beta.10
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -885,14 +885,9 @@
 
     function findVenuePanel() {
         const selectors = [
-            "#venue-edit-general",
-            ".venue-edit-general",
-            "wz-panel[data-testid='venue-feature-editor'] .feature-editor-panel-content",
             "wz-panel[data-testid='venue-feature-editor']",
             ".venue-feature-editor",
             "#venue-feature-editor",
-            "[data-testid='venue-feature-editor']",
-            "#edit-panel .tab-content",
             "#sidebar .feature-editor",
             "#edit-panel"
         ];
@@ -904,22 +899,34 @@
     }
 
     function findHazardPanel() {
-        // 1. Look for tab-content inside hazard-edit-general (matches place tab layout)
         const selectors = [
-            "#hazard-edit-general .tab-content",
-            "#hazard-edit-general",
-            ".permanent-hazard-feature-editor .tab-content",
-            ".permanent-hazard-feature-editor .feature-editor-panel-content",
-            "wz-panel[data-testid='permanent-hazard-feature-editor'] .feature-editor-panel-content",
-            ".permanent-hazard-feature-editor wz-form",
+            "wz-panel[data-testid='permanent-hazard-feature-editor']",
             ".permanent-hazard-feature-editor",
-            "#permanent-hazard-feature-editor"
+            "#permanent-hazard-feature-editor",
+            "#sidebar .feature-editor",
+            "#edit-panel"
         ];
         for (const selector of selectors) {
             const el = document.querySelector(selector);
             if (el) return el;
         }
         return null;
+    }
+
+    function insertButtonBelowHeader(panel, button) {
+        // Locate the tab bar or form content wrapper inside the feature editor panel
+        const tabContainer = panel.querySelector(
+            "wz-navigation-tabs, wz-tab-bar, .nav-tabs, wz-form, .feature-editor-panel-content, #venue-edit-general, #hazard-edit-general"
+        );
+
+        if (tabContainer && tabContainer.parentNode) {
+            // Insert directly above the tab bar (below the Name / ID header)
+            tabContainer.parentNode.insertBefore(button, tabContainer);
+        } else if (panel.firstChild) {
+            panel.insertBefore(button, panel.firstChild);
+        } else {
+            panel.appendChild(button);
+        }
     }
 
     function injectVenueConvertButton() {
@@ -937,7 +944,7 @@
         if (!panel) return false;
 
         if (existing) {
-            if (existing.dataset.featureId === venueId && existing.isConnected && existing.parentElement === panel) {
+            if (existing.dataset.featureId === venueId && existing.isConnected) {
                 return true;
             }
             existing.remove();
@@ -950,11 +957,7 @@
         });
         button.dataset.featureId = venueId;
 
-        if (panel.firstChild) {
-            panel.insertBefore(button, panel.firstChild);
-        } else {
-            panel.appendChild(button);
-        }
+        insertButtonBelowHeader(panel, button);
         return true;
     }
 
@@ -973,7 +976,7 @@
         if (!panel) return false;
 
         if (existing) {
-            if (existing.dataset.featureId === hazardId && existing.isConnected && existing.parentElement === panel) {
+            if (existing.dataset.featureId === hazardId && existing.isConnected) {
                 return true;
             }
             existing.remove();
@@ -986,11 +989,7 @@
         });
         button.dataset.featureId = hazardId;
 
-        if (panel.firstChild) {
-            panel.insertBefore(button, panel.firstChild);
-        } else {
-            panel.appendChild(button);
-        }
+        insertButtonBelowHeader(panel, button);
         return true;
     }
 
