@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.7
+// @version     1.1.1-beta.8
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -18,7 +18,7 @@
     "use strict";
     const SCRIPT_ID = "WME-School-Shortcuts";
     const SCRIPT_NAME = "WME School Shortcuts";
-    const updateMessage = "Bug Fix: Stop convert to school area place showing on other permanant hazards.";
+    const updateMessage = "New Feature: Convert Area Places to School Zones and vice versa";
     WazeWrap.Interface.ShowScriptUpdate(SCRIPT_NAME, GM_info.script.version, updateMessage);
 
     const SHORTCUT_GROUP_ID = `${SCRIPT_ID}-shortcuts`;
@@ -135,16 +135,12 @@
         }
     }
 
-    /**
-     * Extracts live, updated geometry from active WME map selection.
-     */
     function extractGeometry(feature) {
         if (!feature) return null;
 
         const { W } = getWmeGlobals();
         const targetId = String(feature.id ?? feature.venueId ?? feature.permanentHazardId ?? feature.attributes?.id ?? "");
 
-        // 1. Live modified OpenLayers feature geometry from W.selectionManager
         try {
             const selFeatures = W?.selectionManager?.getSelectedFeatures?.() || [];
             for (const sf of selFeatures) {
@@ -159,7 +155,6 @@
             }
         } catch (e) {}
 
-        // 2. Direct getGeometry() call on feature object
         if (typeof feature.getGeometry === "function") {
             try {
                 const g = feature.getGeometry();
@@ -167,7 +162,6 @@
             } catch (e) {}
         }
 
-        // 3. Fallback to model/attribute properties
         return feature.geometry || feature.attributes?.geometry || feature.geom || null;
     }
 
@@ -177,7 +171,6 @@
 
         const geomObj = rawGeometry.type === "Feature" ? rawGeometry.geometry : rawGeometry;
 
-        // 1. Try getVertices() method
         if (typeof geomObj.getVertices === "function") {
             try {
                 const vertices = geomObj.getVertices();
@@ -191,7 +184,6 @@
             } catch (e) {}
         }
 
-        // 2. Try components array (OpenLayers Polygon -> LinearRing -> Points)
         if (!points.length) {
             const components = geomObj.components || geomObj.attributes?.components;
             if (Array.isArray(components) && components.length > 0) {
@@ -209,7 +201,6 @@
             }
         }
 
-        // 3. GeoJSON format fallback
         if (!points.length && geomObj.type === "Polygon" && Array.isArray(geomObj.coordinates)) {
             const ring = geomObj.coordinates[0];
             if (Array.isArray(ring)) {
@@ -221,19 +212,15 @@
             }
         }
 
-        // Filter out invalid numbers for x & y
         points = points.filter((p) => !isNaN(p.x) && !isNaN(p.y));
-
         if (points.length < 3) return [];
 
-        // Ensure all z properties are numeric (0 instead of NaN or undefined)
         points = points.map((p) => ({
             x: p.x,
             y: p.y,
             z: isNaN(p.z) ? 0 : p.z,
         }));
 
-        // Ensure closed ring
         const first = points[0];
         const last = points[points.length - 1];
         if (first.x !== last.x || first.y !== last.y) {
@@ -278,7 +265,6 @@
         const geo2d = createGeoJSONPolygon(pts, false);
         const geo3d = createGeoJSONPolygon(pts, true);
 
-        // 1. Try SDK DataModel with clean GeoJSON objects
         if (typeof sdk?.DataModel?.Venues?.addVenue === "function") {
             const sdkOptions = [
                 { category: "SCHOOL", geometry: geo2d },
@@ -297,7 +283,6 @@
             }
         }
 
-        // 2. Internal WME Action Fallback (Uses OpenLayers objects)
         const { W, Waze } = getWmeGlobals();
         const req = typeof require === "function" ? require : window.require;
 
@@ -347,7 +332,6 @@
         const geo2d = createGeoJSONPolygon(pts, false);
         const geo3d = createGeoJSONPolygon(pts, true);
 
-        // 1. Try SDK PermanentHazards with clean GeoJSON objects
         if (typeof sdk?.DataModel?.PermanentHazards?.addSchoolZone === "function") {
             for (const geom of [geo2d, geo3d]) {
                 try {
@@ -359,7 +343,6 @@
             }
         }
 
-        // 2. Internal WME Action Fallback (Uses OpenLayers objects)
         const { W, Waze } = getWmeGlobals();
         const req = typeof require === "function" ? require : window.require;
 
@@ -415,8 +398,44 @@
         }
     }
 
+    function getSelectedSchoolVenue() {
+        const selection = getCurrentSelection();
+        if (!selection || selection.objectType !== "venue" || !selection.ids?.length) {
+            return null;
+        }
+
+        const venueId = String(selection.ids[0]);
+        let venue = null;
+
+        try {
+            if (typeof sdk?.DataModel?.Venues?.getById === "function") {
+                venue = sdk.DataModel.Venues.getById({ venueId });
+            }
+        } catch (error) {
+            console.debug(`[${SCRIPT_NAME}] Venues.getById failed.`, error);
+        }
+
+        if (!venue) {
+            const { W } = getWmeGlobals();
+            try {
+                venue = W?.model?.venues?.objects?.[venueId] || W?.model?.venues?.getObjectById?.(venueId);
+            } catch (e) {}
+        }
+
+        if (!venue) return null;
+
+        const rawCategories = venue.categories || venue.attributes?.categories || (venue.category ? [venue.category] : []);
+        const categoriesArray = Array.isArray(rawCategories) ? rawCategories : [rawCategories];
+
+        const isSchool = categoriesArray.some((c) => {
+            const val = String(c?.id || c?.name || c || "").toUpperCase();
+            return val === "SCHOOL" || val.includes("SCHOOL");
+        });
+
+        return isSchool ? venue : null;
+    }
+
     function getSelectedSchoolZoneHazard() {
-        // 1. Get selection via SDK
         const selection = getCurrentSelection();
         if (!selection || selection.objectType !== "permanentHazard" || !selection.ids?.length) {
             return null;
@@ -427,7 +446,6 @@
         const strId = String(rawId);
         let hazard = null;
 
-        // 2. Fetch hazard via SDK getById
         try {
             if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
                 hazard =
@@ -438,7 +456,6 @@
             console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById failed.`, e);
         }
 
-        // 3. Fallback: Search SDK DataModel store via getAll()
         if (!hazard && typeof sdk?.DataModel?.PermanentHazards?.getAll === "function") {
             try {
                 const allHazards = sdk.DataModel.PermanentHazards.getAll() || [];
@@ -450,7 +467,6 @@
 
         if (!hazard) return null;
 
-        // 4. Extract hazard type from all potential SDK properties
         const hazardType = String(
             hazard.permanentHazardType ||
             hazard.hazardType ||
@@ -461,19 +477,13 @@
             ""
         ).toUpperCase();
 
-        // 5. Exclude non-school hazards (cameras, speed bumps, etc.)
         if (hazardType.includes("CAMERA") || hazardType.includes("SPEED")) {
             return null;
         }
 
-        // 6. Strict check for School Zone
         const isSchoolZone = hazardType === "SCHOOL_ZONE" || hazardType.includes("SCHOOL");
+        if (isSchoolZone) return hazard;
 
-        if (isSchoolZone) {
-            return hazard;
-        }
-
-        // 7. Broad object string check if properties are nested in SDK prototype
         try {
             const fullObjStr = JSON.stringify(hazard).toUpperCase();
             if (fullObjStr.includes("CAMERA")) return null;
@@ -483,40 +493,6 @@
         } catch (e) {}
 
         return null;
-    }
-
-    function getSelectedSchoolVenue() {
-        // 1. Get selection using official SDK
-        const selection = getCurrentSelection();
-        if (!selection || selection.objectType !== "venue" || !selection.ids?.length) {
-            return null;
-        }
-
-        const venueId = String(selection.ids[0]);
-        let venue = null;
-
-        // 2. Fetch object strictly via SDK DataModel API
-        try {
-            if (typeof sdk?.DataModel?.Venues?.getById === "function") {
-                venue = sdk.DataModel.Venues.getById({ venueId });
-            }
-        } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] Venues.getById failed.`, error);
-            return null;
-        }
-
-        if (!venue) return null;
-
-        // 3. Read categories strictly from SDK venue model
-        const rawCategories = venue.categories || venue.attributes?.categories || (venue.category ? [venue.category] : []);
-        const categoriesArray = Array.isArray(rawCategories) ? rawCategories : [rawCategories];
-
-        const isSchool = categoriesArray.some((c) => {
-            const val = String(c?.id || c?.name || c || "").toUpperCase();
-            return val === "SCHOOL" || val.includes("SCHOOL");
-        });
-
-        return isSchool ? venue : null;
     }
 
     /*
@@ -529,7 +505,6 @@
         const strId = String(venueId);
         const numId = Number(venueId);
 
-        // 1. Try SDK Venues & Editing API Methods
         if (typeof sdk?.DataModel?.Venues?.deleteVenue === "function") {
             try {
                 await sdk.DataModel.Venues.deleteVenue({ venueId: strId });
@@ -543,7 +518,6 @@
             } catch (e) {}
         }
 
-        // 2. ActionManager fallback
         const { W } = getWmeGlobals();
         if (W && W.model?.actionManager && W.model?.venues) {
             const venueObj =
@@ -563,7 +537,6 @@
             }
         }
 
-        // 3. Automated UI / Keypress Failsafe
         try {
             selectVenue(venueId);
             await new Promise((r) => setTimeout(r, 50));
@@ -603,7 +576,6 @@
         const numId = Number(hazardId);
         const strId = String(hazardId);
 
-        // 1. Try SDK PermanentHazards / Editing methods
         if (typeof sdk?.DataModel?.PermanentHazards?.deleteSchoolZone === "function") {
             try {
                 await sdk.DataModel.PermanentHazards.deleteSchoolZone({ permanentHazardId: numId });
@@ -634,7 +606,6 @@
             }
         }
 
-        // 2. ActionManager fallback
         const { W } = getWmeGlobals();
         if (W && W.model?.actionManager && W.model?.permanentHazards) {
             const hazardObj =
@@ -649,14 +620,11 @@
                         const action = new ActionClass(hazardObj);
                         W.model.actionManager.add(action);
                         return true;
-                    } catch (e) {
-                        console.error(`[${SCRIPT_NAME}] ActionClass execution failed:`, e);
-                    }
+                    } catch (e) {}
                 }
             }
         }
 
-        // 3. Automated UI / Keypress Failsafe (Select feature -> Trigger Delete)
         try {
             selectPermanentHazard(hazardId);
             await new Promise((r) => setTimeout(r, 50));
@@ -689,7 +657,6 @@
             console.error(`[${SCRIPT_NAME}] Failsafe UI deletion failed for hazard ${hazardId}:`, e);
         }
 
-        console.error(`[${SCRIPT_NAME}] Deletion failed for hazard ${hazardId}.`);
         return false;
     }
 
@@ -716,7 +683,6 @@
 
         try {
             const schoolZoneId = await addSchoolZone(rawGeometry);
-
             const deleted = await deleteVenueById(venueId);
 
             console.log(`[${SCRIPT_NAME}] Converted School Area Place ${venueId} -> School Zone ${schoolZoneId}.`);
@@ -758,7 +724,6 @@
 
         try {
             const venueId = await addSchoolVenue(rawGeometry);
-
             const deleted = await deletePermanentHazardById(hazardId);
 
             console.log(`[${SCRIPT_NAME}] Converted School Zone ${hazardId} -> School Area Place ${venueId}.`);
@@ -939,7 +904,6 @@
     }
 
     function findHazardPanel() {
-        // Priority order: inner general tab container -> panel content -> panel body -> outer container
         const selectors = [
             "#hazard-edit-general",
             ".permanent-hazard-feature-editor #hazard-edit-general",
@@ -955,6 +919,42 @@
             if (el) return el;
         }
         return null;
+    }
+
+    function injectVenueConvertButton() {
+        const venue = getSelectedSchoolVenue();
+        const existing = document.getElementById(CONVERT_BUTTON_IDS.toSchoolZone);
+
+        if (!venue) {
+            if (existing) existing.remove();
+            return false;
+        }
+
+        const venueId = String(venue.id ?? venue.venueId ?? venue.attributes?.id ?? "");
+        const panel = findVenuePanel();
+
+        if (!panel) return false;
+
+        if (existing) {
+            if (existing.dataset.featureId === venueId && existing.isConnected && existing.parentElement === panel) {
+                return true;
+            }
+            existing.remove();
+        }
+
+        const button = makeConvertButton({
+            id: CONVERT_BUTTON_IDS.toSchoolZone,
+            label: "Convert to School Zone",
+            onClick: () => convertVenueToSchoolZone(venue),
+        });
+        button.dataset.featureId = venueId;
+
+        if (panel.firstChild) {
+            panel.insertBefore(button, panel.firstChild);
+        } else {
+            panel.appendChild(button);
+        }
+        return true;
     }
 
     function injectHazardConvertButton() {
@@ -985,7 +985,6 @@
         });
         button.dataset.featureId = hazardId;
 
-        // Insert inside the content body below the header/tabs
         if (panel.firstChild) {
             panel.insertBefore(button, panel.firstChild);
         } else {
@@ -1006,7 +1005,6 @@
 
             const hazardInjected = injectHazardConvertButton();
             if (!hazardInjected && getSelectedSchoolZoneHazard()) {
-                // Panel rendering delayed: retry up to 1 second
                 let attempts = 0;
                 const retryInterval = setInterval(() => {
                     attempts++;
