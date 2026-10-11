@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WME School Shortcuts
 // @namespace   https://github.com/
-// @version     1.1.1-beta.5
+// @version     1.1.1-beta.6
 // @description Keyboard shortcuts for creating School Area Places and School Zones in WME.
 // @author      Thynamelessone
 // @match       https://www.waze.com/*editor*
@@ -416,44 +416,71 @@
     }
 
     function getSelectedSchoolZoneHazard() {
-        // 1. Get selection using official SDK
+        // 1. Get selection via SDK
         const selection = getCurrentSelection();
         if (!selection || selection.objectType !== "permanentHazard" || !selection.ids?.length) {
             return null;
         }
 
-        const hazardId = Number(selection.ids[0]);
+        const rawId = selection.ids[0];
+        const numId = Number(rawId);
+        const strId = String(rawId);
         let hazard = null;
 
-        // 2. Fetch object strictly via SDK DataModel API
+        // 2. Fetch hazard via SDK getById
         try {
             if (typeof sdk?.DataModel?.PermanentHazards?.getById === "function") {
-                hazard = sdk.DataModel.PermanentHazards.getById({ permanentHazardId: hazardId });
+                hazard =
+                    sdk.DataModel.PermanentHazards.getById({ permanentHazardId: numId }) ||
+                    sdk.DataModel.PermanentHazards.getById({ permanentHazardId: strId });
             }
-        } catch (error) {
-            console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById failed.`, error);
-            return null;
+        } catch (e) {
+            console.debug(`[${SCRIPT_NAME}] PermanentHazards.getById failed.`, e);
+        }
+
+        // 3. Fallback: Search SDK DataModel store via getAll()
+        if (!hazard && typeof sdk?.DataModel?.PermanentHazards?.getAll === "function") {
+            try {
+                const allHazards = sdk.DataModel.PermanentHazards.getAll() || [];
+                hazard = allHazards.find(
+                    (h) => Number(h.id ?? h.permanentHazardId ?? h.attributes?.id) === numId
+                ) || null;
+            } catch (e) {}
         }
 
         if (!hazard) return null;
 
-        // 3. Read type directly from SDK hazard model properties
+        // 4. Extract hazard type from all potential SDK properties
         const hazardType = String(
             hazard.permanentHazardType ||
+            hazard.hazardType ||
             hazard.type ||
             hazard.attributes?.permanentHazardType ||
+            hazard.attributes?.hazardType ||
             hazard.attributes?.type ||
             ""
         ).toUpperCase();
 
-        // 4. Strict SDK validation: Must be SCHOOL_ZONE and NOT CAMERA/SPEED
+        // 5. Exclude non-school hazards (cameras, speed bumps, etc.)
         if (hazardType.includes("CAMERA") || hazardType.includes("SPEED")) {
             return null;
         }
 
-        if (hazardType === "SCHOOL_ZONE" || hazardType.includes("SCHOOL")) {
+        // 6. Strict check for School Zone
+        const isSchoolZone = hazardType === "SCHOOL_ZONE" || hazardType.includes("SCHOOL");
+
+        if (isSchoolZone) {
             return hazard;
         }
+
+        // 7. Broad object string check if properties are nested in SDK prototype
+        try {
+            const fullObjStr = JSON.stringify(hazard).toUpperCase();
+            if (fullObjStr.includes("CAMERA")) return null;
+            if (fullObjStr.includes("SCHOOL_ZONE") || fullObjStr.includes("SCHOOL")) {
+                return hazard;
+            }
+        } catch (e) {}
 
         return null;
     }
@@ -981,7 +1008,7 @@
         if (!panel) return false;
 
         if (existing) {
-            if (existing.dataset.featureId === hazardId && existing.isConnected && existing.parentElement === panel) {
+            if (existing.dataset.featureId === hazardId && existing.isConnected) {
                 return true;
             }
             existing.remove();
